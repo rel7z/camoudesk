@@ -37,7 +37,14 @@ def main() -> None:
         except Exception:
             pass
 
+    def _push_proxies() -> None:
+        try:
+            window.evaluate_js("window.camoudesk && window.camoudesk.onProxiesChange && window.camoudesk.onProxiesChange()")
+        except Exception:
+            pass
+
     manager.add_listener(_push_status)
+    api.set_proxy_notifier(_push_proxies)
     manager.start_monitor()
 
     def _on_closing() -> None:

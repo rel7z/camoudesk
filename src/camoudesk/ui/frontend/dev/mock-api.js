@@ -26,6 +26,7 @@ const proxies = [
 ];
 
 let seq = 10;
+const proxyRow = (px) => ({ ...px, used_by: profiles.filter((p) => p.proxy_id === px.id).length, checking: Boolean(px.checking) });
 const mk = (o) => ({
   id: `prof_${++seq}`, name: "Profile", os: "macos", folder: "", tags: [], notes: "", start_urls: ["https://pixelscan.net"],
   timezone: "auto", locale: "auto", block_webrtc: true, humanize: true, fp_overrides: {}, created_at: ago(5000), last_used_at: null,
@@ -123,7 +124,55 @@ export function installMockApi() {
     }),
     profiles_logs: guard((id) => `[INFO] Launching Camoufox directly profile=${id} os=${find(id).os} headless=False geoip=off\n[INFO] Network: proxy=${find(id).proxy_mode} timezone=${find(id).effective_timezone || "host"}\nJavaScript warning: resource://services-settings/Utils.sys.mjs, line 125: unreachable code after return statement`),
     profiles_diagnostics: guard((id) => `CamouDesk 0.2.0-dev\nprofile: ${id}\nproxy: ${find(id).proxy_label}`),
-    proxies_list: guard(() => proxies.map((p) => ({ ...p }))),
+    proxies_list: guard(() => proxies.map(proxyRow)),
+    proxies_create: guard((d) => {
+      if (!d.host || !d.port) throw new Error("Proxy needs a host and a port between 1 and 65535");
+      const px = { id: `px_${++seq}`, name: d.name || `${d.host}:${d.port}`, type: d.type, host: d.host, port: Number(d.port), username: d.username || "",
+        password: "", has_password: Boolean(d.password), change_ip_url: d.change_ip_url || "", notes: d.notes || "", tags: [], last_check: {} };
+      proxies.push(px);
+      return proxyRow(px);
+    }),
+    proxies_update: guard((id, d) => {
+      const px = proxies.find((x) => x.id === id);
+      Object.assign(px, { ...d, port: Number(d.port), password: "", has_password: px.has_password || Boolean(d.password) });
+      return proxyRow(px);
+    }),
+    proxies_delete: guard((id) => { proxies.splice(proxies.findIndex((x) => x.id === id), 1); return { deleted: true }; }),
+    proxies_check: guard(async (id) => {
+      const px = proxies.find((x) => x.id === id);
+      px.checking = true; window.camoudesk.onProxiesChange();
+      await sleep(800);
+      px.checking = false;
+      px.last_check = px.host.includes("dead")
+        ? { ok: false, error: "Upstream proxy unreachable: ConnectionRefusedError", at: now() }
+        : { ok: true, ip: `198.51.100.${(seq++ % 200) + 10}`, country: "United States", country_code: "US", city: "Ashburn", timezone: "America/New_York", latency_ms: 150 + (seq % 90), at: now() };
+      return { ...proxyRow(px), result: px.last_check };
+    }),
+    proxies_check_all: guard(() => {
+      proxies.forEach((px, i) => setTimeout(() => window.pywebview.api.proxies_check(px.id).then(() => window.camoudesk.onProxiesChange()), i * 250));
+      return { started: proxies.length };
+    }),
+    proxies_import_preview: guard((text, scheme) => {
+      const lines = text.split("\n").map((l, i) => [i + 1, l.trim()]).filter(([, l]) => l && !l.startsWith("#"));
+      const ok = lines.filter(([, l]) => /:\d+/.test(l));
+      return { proxies: ok.map(([, l]) => ({ display: l.replace(/:[^:@]+@/, ":***@"), type: scheme })),
+        errors: lines.filter(([, l]) => !/:\d+/.test(l)).map(([i, l]) => ({ line: i, text: l, error: "Unrecognised format" })) };
+    }),
+    proxies_import: guard((text, scheme, prefix) => {
+      const lines = text.split("\n").map((l) => l.trim()).filter((l) => /:\d+/.test(l));
+      for (const l of lines) {
+        const [host, port, username] = l.split(":");
+        proxies.push({ id: `px_${++seq}`, name: `${prefix}${host}:${port}`, type: scheme, host, port: Number(port), username: username || "",
+          password: "", has_password: Boolean(username), change_ip_url: "", notes: "", tags: [], last_check: {} });
+      }
+      return { created: lines.length, errors: [] };
+    }),
+    proxies_rotate: guard(async (id) => (await window.pywebview.api.proxies_check(id)).data),
+    profiles_assign_proxy: guard((ids, proxyId) => {
+      const px = proxies.find((x) => x.id === proxyId);
+      ids.forEach((id) => { const p = find(id); px ? withProxy(p, px) : applyPayload(p, { proxy_mode: "none" }); });
+      return { changed: ids.length, skipped_running: 0 };
+    }),
     proxy_parse: guard((line, scheme) => {
       const m = line.match(/^(?:(\w+):\/\/)?(?:([^:@]+):([^@]+)@)?([^:@]+):(\d+)(?::([^:]+):(.+))?$/);
       if (!m) throw new Error("Unrecognised format; use host:port, host:port:user:pass or user:pass@host:port");

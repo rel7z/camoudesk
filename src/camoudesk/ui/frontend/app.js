@@ -49,7 +49,11 @@ function App() {
 }
 
 // The backend calls this (via evaluate_js) whenever a browser starts, stops, exits or warns.
-window.camoudesk = { onStatusChange: debounce(() => refreshProfiles(), 120) };
+window.camoudesk = {
+  onStatusChange: debounce(() => refreshProfiles(), 120),
+  // Saved proxies changed (checks finishing); profiles show proxy names/countries too.
+  onProxiesChange: debounce(() => { refreshProxies(); refreshProfiles(); }, 200),
+};
 
 (async () => {
   await maybeInstallMock();

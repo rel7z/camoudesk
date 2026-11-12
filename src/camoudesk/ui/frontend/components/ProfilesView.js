@@ -99,6 +99,26 @@ function Row({ p, selected, pending }) {
   </tr>`;
 }
 
+function AssignProxy({ ids }) {
+  const proxies = useStore((s) => s.proxies);
+  const assign = async (proxyId, label) => {
+    try {
+      const res = await call("profiles_assign_proxy", ids, proxyId);
+      toast(`${label} assigned to ${res.changed} profile${res.changed === 1 ? "" : "s"}${res.skipped_running ? ` (${res.skipped_running} running skipped)` : ""}`, "success");
+    } catch (err) {
+      toast(err.message, "error");
+    }
+    refreshProfiles();
+  };
+  return html`<${Menu} up title="Assign proxy to stopped profiles"
+    trigger=${(toggle) => html`<${Button} size="sm" icon="proxy" disabled=${!ids.length} onClick=${toggle}>Proxy<//>`}
+    items=${[
+      { icon: "shield", label: "Direct (no proxy)", onClick: () => assign("", "Direct connection") },
+      proxies.length ? "-" : null,
+      ...proxies.map((px) => ({ icon: "proxy", label: `${px.name}${px.last_check?.country_code ? " · " + px.last_check.country_code : ""}`, onClick: () => assign(px.id, px.name) })),
+    ]} />`;
+}
+
 function BulkBar({ ids, profiles }) {
   const chosen = profiles.filter((p) => ids.includes(p.id));
   const running = chosen.filter((p) => p.status !== "stopped");
@@ -107,6 +127,7 @@ function BulkBar({ ids, profiles }) {
     <span><strong>${ids.length}</strong> selected</span>
     <${Button} size="sm" kind="start" icon="play" disabled=${!stopped.length} onClick=${() => bulk(stopped.map((p) => p.id), launchProfile)}>Start ${stopped.length || ""}<//>
     <${Button} size="sm" kind="stop" icon="stop" disabled=${!running.length} onClick=${() => bulk(running.map((p) => p.id), stopProfile)}>Stop ${running.length || ""}<//>
+    <${AssignProxy} ids=${stopped.map((p) => p.id)} />
     <${Button} size="sm" kind="danger-ghost" icon="trash" disabled=${!stopped.length} onClick=${() => deleteProfiles(stopped.map((p) => p.id))}>Delete<//>
     <${IconButton} icon="x" title="Clear selection" onClick=${() => setState({ selection: new Set() })} />
   </div>`;

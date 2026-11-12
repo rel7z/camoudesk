@@ -88,6 +88,79 @@ class TestBridge(unittest.TestCase):
             self.api.proxy_test({"proxy_id": px.id})
         self.assertEqual(self.proxies.get(px.id).last_check.country_code, "BR")  # recorded on the saved proxy
 
+    def test_proxy_manager_crud_never_exposes_password(self) -> None:
+        row = self.api.proxies_create({"name": "P1", "type": "socks5", "host": "10.0.0.9", "port": 1080, "username": "u", "password": "topsecret"})["data"]
+        self.assertNotIn("topsecret", json.dumps(row))
+        self.assertTrue(row["has_password"])
+        self.assertEqual((row["used_by"], row["checking"]), (0, False))
+        listed = self.api.proxies_list()["data"]
+        self.assertNotIn("topsecret", json.dumps(listed))
+        upd = self.api.proxies_update(row["id"], {"name": "P1b", "password": ""})["data"]
+        self.assertEqual(upd["name"], "P1b")
+        self.assertEqual(self.proxies.get(row["id"]).password, "topsecret")
+
+    def test_deleting_in_use_proxy_needs_force_and_never_falls_back_to_direct(self) -> None:
+        px = self.api.proxies_create({"type": "http", "host": "10.0.0.9", "port": 8080})["data"]
+        prof = self.api.profiles_create({"name": "User", "proxy_mode": "saved", "proxy_id": px["id"]})["data"]
+        first = self.api.proxies_delete(px["id"])["data"]
+        self.assertEqual(first, {"deleted": False, "in_use": 1})
+        self.assertTrue(self.api.proxies_delete(px["id"], True)["data"]["deleted"])
+        row = self.api.profiles_get(prof["id"])["data"]
+        self.assertTrue(row["proxy_missing"])
+        launch = self.api.profiles_launch(prof["id"])
+        self.assertFalse(launch["ok"])
+        self.assertIn("saved proxy was deleted", launch["error"])
+
+    def test_check_all_runs_in_background_and_notifies(self) -> None:
+        import threading
+        ids = [self.api.proxies_create({"type": "http", "host": f"10.0.0.{i}", "port": 80})["data"]["id"] for i in range(3)]
+        notified = threading.Event()
+        calls = []
+        self.api.set_proxy_notifier(lambda: (calls.append(1), notified.set()))
+        fake = {"ok": True, "ip": "203.0.113.4", "country_code": "CA", "timezone": "America/Toronto", "latency_ms": 50}
+        with patch("camoudesk.ui.api.check_proxy_config", return_value=dict(fake)):
+            started = self.api.proxies_check_all()["data"]
+            self.assertEqual(started["started"], 3)
+            deadline = __import__("time").monotonic() + 5
+            while __import__("time").monotonic() < deadline and not all(self.proxies.get(i).last_check.ok for i in ids):
+                __import__("time").sleep(0.05)
+        self.assertTrue(all(self.proxies.get(i).last_check.country_code == "CA" for i in ids))
+        self.assertGreaterEqual(len(calls), 6)  # checking -> done for each proxy
+
+    def test_import_preview_and_import(self) -> None:
+        prev = self.api.proxies_import_preview("1.1.1.1:80:u:p\nnope\nsocks5://2.2.2.2:1080", "http")["data"]
+        self.assertEqual(len(prev["proxies"]), 2)
+        self.assertNotIn(":p@", json.dumps(prev))  # previews are masked
+        self.assertEqual(prev["errors"][0]["line"], 2)
+        res = self.api.proxies_import("1.1.1.1:80:u:p\n3.3.3.3:8080", "http", "US-", False)["data"]
+        self.assertEqual(res["created"], 2)
+        self.assertEqual(sorted(p.name for p in self.proxies.list()), ["US-1.1.1.1:80", "US-3.3.3.3:8080"])
+
+    def test_rotate_calls_change_url_directly_then_rechecks(self) -> None:
+        px = self.api.proxies_create({"type": "http", "host": "10.0.0.9", "port": 80, "change_ip_url": "https://rotate.example/x"})["data"]
+        no_url = self.api.proxies_create({"type": "http", "host": "10.0.0.8", "port": 80})["data"]
+        self.assertFalse(self.api.proxies_rotate(no_url["id"])["ok"])
+        resp = type("R", (), {"status_code": 200})()
+        fake = {"ok": True, "ip": "203.0.113.200", "country_code": "US", "timezone": "UTC"}
+        with patch("requests.get", return_value=resp) as get, patch("camoudesk.ui.api.check_proxy_config", return_value=dict(fake)), \
+                patch("camoudesk.ui.api.time.sleep"):
+            row = self.api.proxies_rotate(px["id"])["data"]
+        self.assertEqual(get.call_args.args[0], "https://rotate.example/x")
+        self.assertNotIn("proxies", get.call_args.kwargs)  # not routed through the proxy itself
+        self.assertEqual(row["result"]["ip"], "203.0.113.200")
+
+    def test_bulk_assign_proxy_skips_running(self) -> None:
+        px = self.api.proxies_create({"type": "http", "host": "10.0.0.9", "port": 80})["data"]
+        a = self.api.profiles_create({"name": "A"})["data"]["id"]
+        b = self.api.profiles_create({"name": "B"})["data"]["id"]
+        self.manager.launch(b)
+        res = self.api.profiles_assign_proxy([a, b], px["id"])["data"]
+        self.assertEqual(res, {"changed": 1, "skipped_running": 1})
+        self.assertEqual(self.store.get_profile(a).proxy_id, px["id"])
+        self.assertEqual(self.store.get_profile(b).proxy_id, "")
+        self.api.profiles_assign_proxy([a], "")
+        self.assertEqual(self.store.get_profile(a).proxy_id, "")
+
     def test_rows_report_effective_network(self) -> None:
         row = self.api.profiles_create({"name": "Geo", "proxy_mode": "custom",
                                         "proxy_parts": {"type": "http", "host": "10.0.0.1", "port": "8080"},

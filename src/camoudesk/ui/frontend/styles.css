@@ -131,7 +131,7 @@ button:disabled { cursor: default; }
 .field .select-wrap { display: flex; }
 
 /* ---------------------------------------------------------------- table */
-.table-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.table-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow-x: auto; }
 .table { width: 100%; border-collapse: collapse; }
 .table th { white-space: nowrap; text-align: left; font-size: 11px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.4px;
   padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 1; }
@@ -152,11 +152,12 @@ button:disabled { cursor: default; }
 .proxy-cell > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-used { white-space: nowrap; }
 .col-actions { width: 1%; white-space: nowrap; text-align: right; }
+.table td.col-actions, .table th.col-actions { padding-right: 8px; padding-left: 4px; }
 .col-actions > * { vertical-align: middle; }
 .col-actions .menu { display: inline-block; margin-left: 4px; }
 .row-warn { color: var(--warn); margin-left: 6px; display: inline-flex; vertical-align: middle; }
 
-.chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 999px; font-size: 11.5px; font-weight: 560; }
+.chip { white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px; border-radius: 999px; font-size: 11.5px; font-weight: 560; }
 .chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .chip-ok { background: var(--ok-soft); color: var(--ok); }
 .chip-busy { background: var(--warn-soft); color: var(--warn); }
@@ -283,3 +284,11 @@ button:disabled { cursor: default; }
 .toast-info > .icon { color: var(--accent); }
 .toast-x { color: var(--faint); display: grid; place-items: center; padding: 2px; border-radius: 4px; }
 .toast-x:hover { color: var(--text); background: var(--hover); }
+
+/* ---------------------------------------------------------------- proxies */
+.drawer-sm { width: min(540px, 100vw); }
+.import-preview { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-2); }
+.import-errors { display: flex; flex-direction: column; gap: 4px; font-size: 12px; max-height: 160px; overflow: auto; }
+.menu-pop .menu-title { padding: 6px 9px 4px; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.4px; }
+.menu-up .menu-pop { top: auto; bottom: calc(100% + 6px); max-height: 320px; overflow: auto; }
+.nowrap { white-space: nowrap; }

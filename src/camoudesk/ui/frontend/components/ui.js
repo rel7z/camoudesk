@@ -94,7 +94,7 @@ export function CountryChip({ code }) {
   return code ? html`<span class="cc">${code}</span>` : null;
 }
 
-export function Menu({ items, label = "More actions" }) {
+export function Menu({ items, label = "More actions", trigger, up = false, title }) {
   const [open, setOpen] = useState(false);
   const ref = useRef();
   useEffect(() => {
@@ -108,10 +108,12 @@ export function Menu({ items, label = "More actions" }) {
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
-  return html`<div class="menu" ref=${ref}>
-    <${IconButton} icon="more" title=${label} onClick=${(e) => { e.stopPropagation(); setOpen(!open); }} />
+  const toggle = (e) => { e.stopPropagation(); setOpen(!open); };
+  return html`<div class=${`menu ${up ? "menu-up" : ""}`} ref=${ref}>
+    ${trigger ? trigger(toggle) : html`<${IconButton} icon="more" title=${label} onClick=${toggle} />`}
     ${open
       ? html`<div class="menu-pop" role="menu">
+          ${title ? html`<div class="menu-title">${title}</div>` : null}
           ${items.filter(Boolean).map((it) =>
             it === "-"
               ? html`<div class="menu-sep" />`

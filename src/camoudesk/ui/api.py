@@ -6,8 +6,11 @@ never raises into the webview. Methods are grouped by prefix (``profiles_*``, ``
 and an empty password in an update means "keep the stored one".
 """
 
+from concurrent.futures import ThreadPoolExecutor
 import functools
-from typing import Any, Callable, Dict, List, Optional
+import threading
+import time
+from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
 
 from camoudesk import __version__
@@ -15,7 +18,7 @@ from camoudesk.core import geoip_db
 from camoudesk.core.geo import locale_for_country
 from camoudesk.core.launcher import resolve_network
 from camoudesk.core.proxy import check_proxy_config
-from camoudesk.core.proxy_parse import parse_proxy_line
+from camoudesk.core.proxy_parse import parse_proxy_line, parse_proxy_list
 from camoudesk.core.proxy_store import ProxyStore
 from camoudesk.core.settings_store import SettingsStore
 from camoudesk.core.storage import ProfileStore
@@ -113,6 +116,13 @@ class DesktopBridgeApi:
         self.manager = manager
         self.proxies = proxies or manager.proxies
         self.settings = settings or SettingsStore(store.app_dir)
+        self._checking: Set[str] = set()
+        self._checking_lock = threading.Lock()
+        self._notify_proxies: Callable[[], None] = lambda: None
+
+    def set_proxy_notifier(self, callback: Callable[[], None]) -> None:
+        """Called (from worker threads) when saved proxies change, e.g. as checks finish."""
+        self._notify_proxies = callback
 
     # ------------------------------------------------------------------ serialisation
 
@@ -234,9 +244,137 @@ class DesktopBridgeApi:
 
     # ------------------------------------------------------------------ proxies
 
+    def _proxy_row(self, proxy: SavedProxy, usage: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
+        data = proxy.to_public_dict()
+        if usage is None:
+            usage = self._proxy_usage()
+        data["used_by"] = usage.get(proxy.id, 0)
+        data["checking"] = proxy.id in self._checking
+        return data
+
+    def _proxy_usage(self) -> Dict[str, int]:
+        usage: Dict[str, int] = {}
+        for p in self.store.list_profiles():
+            if p.proxy_id:
+                usage[p.proxy_id] = usage.get(p.proxy_id, 0) + 1
+        return usage
+
+    def _check_saved(self, proxy_id: str) -> Dict[str, Any]:
+        saved = self.proxies.get(proxy_id)
+        if saved is None:
+            raise KeyError("Saved proxy not found")
+        with self._checking_lock:
+            self._checking.add(proxy_id)
+        self._notify_proxies()
+        try:
+            result = check_proxy_config(saved.to_config())
+            self.proxies.record_check(proxy_id, result)
+            return result
+        finally:
+            with self._checking_lock:
+                self._checking.discard(proxy_id)
+            self._notify_proxies()
+
     @_bridge
     def proxies_list(self) -> List[Dict[str, Any]]:
-        return [p.to_public_dict() for p in self.proxies.list()]
+        usage = self._proxy_usage()
+        return [self._proxy_row(p, usage) for p in self.proxies.list()]
+
+    @_bridge
+    def proxies_create(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        return self._proxy_row(self.proxies.create(data or {}))
+
+    @_bridge
+    def proxies_update(self, proxy_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        return self._proxy_row(self.proxies.update(proxy_id, data or {}))
+
+    @_bridge
+    def proxies_delete(self, proxy_id: str, force: bool = False) -> Dict[str, Any]:
+        """Delete a saved proxy. Profiles using it are NOT switched to Direct (that would expose
+        the real IP); they refuse to launch until another proxy is chosen."""
+        in_use = self._proxy_usage().get(proxy_id, 0)
+        if in_use and not force:
+            return _Data({"deleted": False, "in_use": in_use})
+        if not self.proxies.delete(proxy_id):
+            raise KeyError("Saved proxy not found")
+        return _Data({"deleted": True, "in_use": in_use})
+
+    @_bridge
+    def proxies_check(self, proxy_id: str) -> Dict[str, Any]:
+        result = self._check_saved(proxy_id)
+        row = self._proxy_row(self.proxies.get(proxy_id))
+        row["result"] = _with_locale(result)
+        return row
+
+    @_bridge
+    def proxies_check_all(self, proxy_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Check proxies in the background (8 at a time); the page is notified as each finishes."""
+        ids = [p.id for p in self.proxies.list() if not proxy_ids or p.id in proxy_ids]
+
+        def run() -> None:
+            with ThreadPoolExecutor(max_workers=8, thread_name_prefix="camoudesk-proxy-check") as pool:
+                for future in [pool.submit(self._check_saved, pid) for pid in ids]:
+                    try:
+                        future.result()
+                    except Exception:
+                        pass
+
+        threading.Thread(target=run, name="camoudesk-check-all", daemon=True).start()
+        return {"started": len(ids)}
+
+    @_bridge
+    def proxies_import_preview(self, text: str, default_scheme: str = "http") -> Dict[str, Any]:
+        configs, errors = parse_proxy_list(str(text or ""), default_scheme or "http")
+        return {
+            "proxies": [{"display": c.masked_display(), "type": c.scheme, "host": c.host, "port": c.port} for c in configs],
+            "errors": [{"line": e.line_no, "text": e.line[:120], "error": e.error} for e in errors],
+        }
+
+    @_bridge
+    def proxies_import(self, text: str, default_scheme: str = "http", name_prefix: str = "", check: bool = True) -> Dict[str, Any]:
+        created, errors = self.proxies.import_text(str(text or ""), default_scheme or "http", str(name_prefix or "")[:40])
+        if check and created:
+            self.proxies_check_all([p.id for p in created])
+        return {
+            "created": len(created),
+            "errors": [{"line": e.line_no, "text": e.line[:120], "error": e.error} for e in errors],
+        }
+
+    @_bridge
+    def proxies_rotate(self, proxy_id: str) -> Dict[str, Any]:
+        """Call the provider's change-IP URL (directly, not through the proxy), then re-check."""
+        saved = self.proxies.get(proxy_id)
+        if saved is None:
+            raise KeyError("Saved proxy not found")
+        if not saved.change_ip_url:
+            raise ValueError("This proxy has no change-IP URL")
+        import requests
+
+        try:
+            resp = requests.get(saved.change_ip_url, timeout=20, headers={"User-Agent": "CamouDesk/1.0"})
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Change-IP request failed: {type(exc).__name__}") from exc
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Change-IP URL returned HTTP {resp.status_code}")
+        time.sleep(2)  # providers usually need a moment before the new IP is live
+        result = self._check_saved(proxy_id)
+        row = self._proxy_row(self.proxies.get(proxy_id))
+        row["result"] = _with_locale(result)
+        return row
+
+    @_bridge
+    def profiles_assign_proxy(self, profile_ids: List[str], proxy_id: str) -> Dict[str, Any]:
+        """Bulk: point profiles at a saved proxy ("" = Direct). Running profiles are skipped."""
+        if proxy_id and not self.proxies.get(proxy_id):
+            raise KeyError("Saved proxy not found")
+        changed, skipped = 0, 0
+        for pid in profile_ids or []:
+            if self.manager.is_running(pid):
+                skipped += 1
+                continue
+            self.store.update_profile(pid, {"proxy_id": proxy_id, "proxy": ""} if proxy_id else {"proxy_id": "", "proxy": ""})
+            changed += 1
+        return {"changed": changed, "skipped_running": skipped}
 
     @_bridge
     def proxy_parse(self, line: str, default_scheme: str = "http") -> Dict[str, Any]:
