@@ -111,7 +111,8 @@ export function installMockApi() {
     }),
     profiles_update: guard((id, d) => {
       const p = find(id);
-      if (p.status !== "stopped") throw new Error("Stop the running browser before editing this profile.");
+      const locked = Object.keys(d).filter((k) => !["name", "notes", "folder", "tags"].includes(k));
+      if (p.status !== "stopped" && locked.length) throw new Error(`Stop the running browser to change network, fingerprint or system settings (${locked.join(", ")}).`);
       return { ...applyPayload(p, d) };
     }),
     profiles_regenerate_fingerprint: guard((id, screen) => {

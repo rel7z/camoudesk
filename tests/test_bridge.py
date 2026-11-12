@@ -69,7 +69,7 @@ class TestBridge(unittest.TestCase):
     def test_update_blocked_while_running(self) -> None:
         pid = self.store.list_profiles()[0].id
         self.manager.launch(pid)
-        res = self.api.profiles_update(pid, {"name": "x"})
+        res = self.api.profiles_update(pid, {"name": "x", "os": "linux"})
         self.assertFalse(res["ok"])
         self.assertIn("Stop the running browser", res["error"])
 

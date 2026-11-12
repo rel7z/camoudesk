@@ -141,6 +141,7 @@ class ProcessManager:
     ) -> None:
         self.store = store
         self.proxies = proxies or ProxyStore(store.app_dir)
+        self.stop_timeout = 10.0  # grace period for a browser to quit before signals escalate
         self.python_executable = python_executable or sys.executable
         self._lock = threading.Lock()
         self._runs: Dict[str, _Run] = {}
@@ -723,19 +724,42 @@ class ProcessManager:
             self._last_errors.pop(safe_id, None)
         return {"ok": True, "was_running": True, "exited": True}
 
-    def stop_all(self, timeout: float = 10.0) -> None:
-        """Stop every browser in parallel so quitting the GUI waits at most ~timeout, not N*timeout."""
+    def stop_all(self, timeout: Optional[float] = None, include_sdk: bool = False) -> None:
+        """Stop every browser in parallel so quitting the GUI waits at most ~timeout, not N*timeout.
+
+        SDK runs are the user's own scripts, not browsers this app started: they are left alone
+        unless ``include_sdk`` (a manual Stop on such a profile still works).
+        """
         with self._lock:
             self._reap_finished_locked()
-            items = list(self._runs.items())
-            self._runs.clear()
+            ids = [pid for pid, run in self._runs.items() if include_sdk or run.mode != MODE_SDK]
+        self.stop_many(ids, timeout=timeout)
+
+    def stop_many(self, profile_ids: List[str], timeout: Optional[float] = None) -> Dict[str, bool]:
+        """Stop several profiles in parallel (one shared timeout). Returns {profile_id: exited}."""
+        timeout = self.stop_timeout if timeout is None else timeout
+        safe_ids = [sanitize_profile_id(i) for i in profile_ids]
+        with self._lock:
+            self._reap_finished_locked()
+            items = [(i, self._runs.pop(i)) for i in safe_ids if i in self._runs]
+            for i, _ in items:
+                self._transitions[i] = "stopping"
+        if items:
+            self._notify()
         survivors = set(id(r) for r in self._terminate([r for _, r in items], timeout))
+        result = {i: True for i in safe_ids}
         with self._lock:
             for profile_id, run in items:
+                self._transitions.pop(profile_id, None)
                 if id(run) in survivors:
                     self._runs[profile_id] = run
+                    result[profile_id] = False
                 else:
                     self._finish_locked(profile_id, run)
+                    self._last_errors.pop(profile_id, None)
+        if items:
+            self._notify()
+        return result
 
     # ------------------------------------------------------------------ logs
 

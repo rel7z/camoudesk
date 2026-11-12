@@ -45,12 +45,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     store = ProfileStore()
 
     if args.command == "list":
-        profiles = [p.to_dict() for p in store.list_profiles()]
+        # Trashed profiles are hidden, as in the app; proxy URLs (may hold passwords) are omitted.
+        profiles = [p.to_dict() for p in store.list_profiles() if not p.deleted_at]
+        for p in profiles:
+            p.pop("proxy", None)
         if args.json:
             print(json.dumps(profiles, indent=2))
         else:
             for p in profiles:
-                print(f"{p['id']:24s}  {p['os']:8s}  {p['name']}")
+                folder = f"[{p['folder']}] " if p.get("folder") else ""
+                print(f"{p['id']:24s}  {p['os']:8s}  {folder}{p['name']}")
         return 0
 
     if args.command == "create":

@@ -7,10 +7,16 @@ const ready = new Promise((resolve) => (readyResolve = resolve));
 // so "ready" means the methods exist, not merely the object. The event can also fire before this
 // module runs, hence the short poll as a fallback.
 const hasApi = () => Boolean(window.pywebview && window.pywebview.api && typeof window.pywebview.api.app_info === "function");
+// Any bridge methods at all: an older backend may lack app_info but still deserves an
+// "updated, please restart" message rather than an endless loading state.
+const hasAnyMethod = () =>
+  Boolean(window.pywebview && window.pywebview.api && Object.values(window.pywebview.api).some((v) => typeof v === "function"));
 if (hasApi()) readyResolve();
 window.addEventListener("pywebviewready", () => hasApi() && readyResolve());
+let pollTicks = 0;
 const readyPoll = setInterval(() => {
-  if (hasApi()) {
+  pollTicks++;
+  if (hasApi() || (pollTicks > 60 && hasAnyMethod())) {
     clearInterval(readyPoll);
     readyResolve();
   }
@@ -22,7 +28,9 @@ export const whenReady = () => ready;
 export async function call(method, ...args) {
   await ready;
   const fn = window.pywebview.api[method];
-  if (typeof fn !== "function") throw new Error(`Bridge method missing: ${method}`);
+  // The page and the Python backend come from the same release; a missing method means the app
+  // was updated while an older copy was still running (it happened: the "Try again" screen).
+  if (typeof fn !== "function") throw new Error("CamouDesk was updated while it was open. Quit it (⌘Q) and open it again.");
   const res = await fn(...args);
   if (!res || res.ok === false) throw new Error((res && res.error) || `${method} failed`);
   return "data" in res ? res.data : res;

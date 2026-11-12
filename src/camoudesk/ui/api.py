@@ -31,6 +31,10 @@ from camoudesk.models.profile import Profile, ProxyConfig, validate_os_target
 from camoudesk.models.proxy import SavedProxy
 
 
+# Fields that can change while the profile's browser is running (they never reach the browser).
+_RUNNING_EDITABLE = frozenset({"name", "notes", "folder", "tags"})
+
+
 class _Data(dict):
     """A result that is data even though it has its own ``ok`` field (e.g. a proxy check)."""
 
@@ -218,13 +222,12 @@ class DesktopBridgeApi:
     @_bridge
     def profiles_trash(self, profile_ids: List[str]) -> Dict[str, Any]:
         """Move profiles to the trash; their data stays on disk until purged. Running ones are stopped."""
+        exited = self.manager.stop_many(profile_ids or [])  # in parallel, not one by one
         moved = 0
-        for pid in profile_ids or []:
-            stopped = self.manager.stop(pid)
-            if not stopped.get("exited", True):
-                continue
-            self.store.set_trashed(pid, True)
-            moved += 1
+        for pid, ok in exited.items():
+            if ok:
+                self.store.set_trashed(pid, True)
+                moved += 1
         return {"trashed": moved}
 
     @_bridge
@@ -236,14 +239,11 @@ class DesktopBridgeApi:
     @_bridge
     def profiles_purge(self, profile_ids: List[str]) -> Dict[str, Any]:
         """Delete forever (data wiped). Only profiles already in the trash can be purged."""
+        trashed = [pid for pid in profile_ids or [] if (p := self.store.get_profile(pid)) is not None and p.deleted_at]
+        exited = self.manager.stop_many(trashed)
         purged = 0
-        for pid in profile_ids or []:
-            prof = self.store.get_profile(pid)
-            if prof is None or not prof.deleted_at:
-                continue
-            if not self.manager.stop(pid).get("exited", True):
-                continue
-            if self.store.delete_profile(pid, wipe_data=True):
+        for pid in trashed:
+            if exited.get(pid) and self.store.delete_profile(pid, wipe_data=True):
                 purged += 1
         return {"purged": purged}
 
@@ -293,7 +293,13 @@ class DesktopBridgeApi:
     @_bridge
     def profiles_update(self, profile_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if self.manager.is_running(profile_id):
-            raise ValueError("Stop the running browser before editing this profile.")
+            # Labels don't affect the running browser; network, fingerprint and system settings do.
+            locked = sorted(set(payload or {}) - _RUNNING_EDITABLE)
+            if locked:
+                raise ValueError(
+                    "Stop the running browser to change network, fingerprint or system settings "
+                    f"({', '.join(locked)}). Name, notes, folder and tags can be edited while it runs."
+                )
         current = self.store.get_profile(profile_id)
         if current is None:
             raise KeyError("Profile not found")
@@ -413,11 +419,11 @@ class DesktopBridgeApi:
 
     @_bridge
     def proxies_check_all(self, proxy_ids: Optional[List[str]] = None) -> Dict[str, Any]:
-        """Check proxies in the background (8 at a time); the page is notified as each finishes."""
+        """Check proxies in the background (4 at a time); the page is notified as each finishes."""
         ids = [p.id for p in self.proxies.list() if not proxy_ids or p.id in proxy_ids]
 
         def run() -> None:
-            with ThreadPoolExecutor(max_workers=8, thread_name_prefix="camoudesk-proxy-check") as pool:
+            with ThreadPoolExecutor(max_workers=4, thread_name_prefix="camoudesk-proxy-check") as pool:
                 for future in [pool.submit(self._check_saved, pid) for pid in ids]:
                     try:
                         future.result()

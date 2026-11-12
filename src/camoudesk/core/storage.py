@@ -491,7 +491,7 @@ class ProfileStore:
         return changed
 
     _COPY_SKIP = {"cache2", "startupCache", "crashes", "minidumps", "saved-telemetry-pings", "datareporting",
-                  "lock", ".parentlock", "parent.lock", "storage.sqlite-journal"}
+                  "lock", ".parentlock", "parent.lock", "storage.sqlite-journal", ".cookie-import.json"}
 
     def clone_profile(self, profile_id: str, name: str = "", copy_data: bool = False) -> Profile:
         """Clone a profile's settings. ``copy_data`` also copies its fingerprint, cookies and site

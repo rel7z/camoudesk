@@ -82,7 +82,9 @@ function Row({ p, selected, pending }) {
     <td class="col-tz"><div>${tz}</div><div class="sub">${p.effective_locale || (p.locale === "auto" ? "Default locale" : p.locale)}</div></td>
     <td class="col-used muted">${relativeTime(p.last_used_at)}</td>
     <td class="col-actions">
-      ${live
+      ${status === "busy"
+        ? html`<${Button} size="sm" busy=${true} title="Importing cookies">Working<//>`
+        : live
         ? html`<${Button} size="sm" kind="stop" icon="stop" busy=${busy} onClick=${() => stopProfile(p.id)}>${status === "stopping" ? "Stopping" : "Stop"}<//>`
         : html`<${Button} size="sm" kind="start" icon="play" busy=${busy} onClick=${() => launchProfile(p.id)}>${status === "starting" ? "Starting" : "Start"}<//>`}
       <${Menu} items=${[
@@ -153,7 +155,7 @@ function TagMenu({ ids, profiles }) {
 
 function BulkBar({ ids, profiles }) {
   const chosen = profiles.filter((p) => ids.includes(p.id));
-  const running = chosen.filter((p) => p.status !== "stopped");
+  const running = chosen.filter((p) => p.status !== "stopped" && p.status !== "busy");
   const stopped = chosen.filter((p) => p.status === "stopped");
   return html`<div class="bulkbar" role="toolbar" aria-label="Selected profiles">
     <span><strong>${ids.length}</strong> selected</span>

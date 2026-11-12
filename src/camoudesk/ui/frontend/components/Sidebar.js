@@ -14,7 +14,7 @@ function NavButton({ active, icon, label, count, onClick, children }) {
 
 export function Sidebar() {
   const { view, profiles, proxies, trash, appInfo, filters } = useStore((s) => s);
-  const running = profiles.filter((p) => p.status !== "stopped").length;
+  const running = profiles.filter((p) => p.status !== "stopped" && p.status !== "busy").length;
   const folders = {};
   profiles.forEach((p) => p.folder && (folders[p.folder] = (folders[p.folder] || 0) + 1));
   const go = (patch) => setState((s) => ({ ...patch, selection: new Set(), drawer: null, filters: { ...s.filters, ...(patch.filters || {}) } }));

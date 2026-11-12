@@ -1,18 +1,26 @@
 """PyWebView macOS desktop host entrypoint for CamouDesk."""
 
 from pathlib import Path
+import sys
 
 import webview
 
 from camoudesk.core.storage import ProfileStore
 from camoudesk.manager.process_manager import ProcessManager
 from camoudesk.ui.api import DesktopBridgeApi
+from camoudesk.ui.single_instance import InstanceLock, activate_existing
 
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 
 
 def main() -> None:
     store = ProfileStore()
+    instance = InstanceLock(store.app_dir)
+    if not instance.acquire():
+        # Another CamouDesk already manages this data folder: show it instead of competing.
+        activate_existing(instance.holder_pid())
+        print("CamouDesk is already running; brought the existing window to the front.", file=sys.stderr)
+        return
     manager = ProcessManager(store=store)
     api = DesktopBridgeApi(store=store, manager=manager)
 

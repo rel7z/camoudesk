@@ -157,7 +157,11 @@ function NetworkTab({ f, set, row, disabled, check, setCheck }) {
         </div>
         <div class="grid-2">
           <${Field} label="Username"><${TextInput} value=${f.p_user} disabled=${disabled || f.p_type === "socks4"} onInput=${(p_user) => set({ p_user })} /><//>
-          <${Field} label="Password" hint=${f.p_has_pass && !f.p_pass ? "Saved — leave blank to keep it" : ""}>
+          <${Field} label="Password" hint=${f.p_has_pass && !f.p_pass
+            ? (f.p_host.trim() === (row?.proxy_parts?.host || "") && f.p_user === (row?.proxy_parts?.username || "")
+              ? "Saved — leave blank to keep it"
+              : "Host or username changed: enter the password for this proxy")
+            : ""}>
             <${TextInput} type="password" value=${f.p_pass} disabled=${disabled || f.p_type === "socks4"} onInput=${(p_pass) => set({ p_pass })}
               placeholder=${f.p_has_pass ? "••••••••" : ""} /><//>
         </div>`
@@ -183,14 +187,14 @@ function NetworkTab({ f, set, row, disabled, check, setCheck }) {
   </div>`;
 }
 
-function GeneralTab({ f, set, disabled, isNew }) {
+function GeneralTab({ f, set, disabled, locked, isNew }) {
   const profiles = useStore((s) => s.profiles);
   const folders = [...new Set(profiles.map((p) => p.folder).filter(Boolean))];
   return html`<div class="form">
     <${Field} label="Name" wide><${TextInput} autofocus=${isNew} value=${f.name} disabled=${disabled} onInput=${(name) => set({ name })} placeholder="e.g. Store US 01" /><//>
     <div class="grid-2">
       <${Field} label="Operating system" hint=${isNew ? "The fingerprint is generated for this system." : "Changing it creates a new fingerprint."}>
-        <${Select} value=${f.os} disabled=${disabled} onChange=${(os) => set({ os })} options=${Object.entries(OS_LABELS).map(([value, label]) => ({ value, label }))} />
+        <${Select} value=${f.os} disabled=${disabled || locked} onChange=${(os) => set({ os })} options=${Object.entries(OS_LABELS).map(([value, label]) => ({ value, label }))} />
       <//>
       <${Field} label="Folder">
         <${TextInput} value=${f.folder} list="folder-list" disabled=${disabled} onInput=${(folder) => set({ folder })} placeholder="None" />
@@ -199,7 +203,7 @@ function GeneralTab({ f, set, disabled, isNew }) {
     </div>
     <${Field} label="Tags" wide hint="Separate with commas"><${TextInput} value=${f.tags} disabled=${disabled} onInput=${(tags) => set({ tags })} placeholder="ads, warmed, us" /><//>
     <${Field} label="Start pages" wide hint="One URL per line; each opens in its own tab">
-      <${TextArea} mono rows=${3} value=${f.start_urls} disabled=${disabled} onInput=${(start_urls) => set({ start_urls })} placeholder="https://example.com" />
+      <${TextArea} mono rows=${3} value=${f.start_urls} disabled=${disabled || locked} onInput=${(start_urls) => set({ start_urls })} placeholder="https://example.com" />
     <//>
     <${Field} label="Notes" wide><${TextArea} rows=${3} value=${f.notes} disabled=${disabled} onInput=${(notes) => set({ notes })} /><//>
   </div>`;
@@ -436,7 +440,7 @@ export function ProfileDrawer() {
 
   const submit = async (e) => {
     e && e.preventDefault();
-    if (running || saving) return;
+    if (saving) return;
     if (!f.name.trim()) {
       setState({ drawer: { ...drawer, tab: "general" } });
       toast("Give the profile a name", "error");
@@ -444,7 +448,10 @@ export function ProfileDrawer() {
     }
     setSaving(true);
     try {
-      const saved = await saveProfile(drawer.id, toPayload(f, check));
+      const full = toPayload(f, check);
+      // A running browser keeps its network, fingerprint and system settings; only labels change.
+      const payload = running ? { name: full.name, notes: full.notes, folder: full.folder, tags: full.tags } : full;
+      const saved = await saveProfile(drawer.id, payload);
       toast(isNew ? `Created "${saved.name}"` : "Profile saved", "success");
       closeDrawer();
     } catch (err) {
@@ -463,12 +470,12 @@ export function ProfileDrawer() {
         <${IconButton} icon="x" title="Close (Esc)" onClick=${requestClose} />
       </header>
       ${running
-        ? html`<div class="banner"><${Icon} name="info" /><span>This profile is running. Stop it to make changes.</span>
+        ? html`<div class="banner"><${Icon} name="info" /><span>Running: you can rename it and edit notes, folder and tags. Stop it to change network, fingerprint or system settings.</span>
             <${Button} size="sm" kind="stop" icon="stop" onClick=${() => stopProfile(row.id)}>Stop<//></div>`
         : null}
       <${Tabs} value=${tab} onChange=${(t) => setState({ drawer: { ...drawer, tab: t } })} tabs=${TABS} />
       <div class="drawer-body">
-        ${tab === "general" ? html`<${GeneralTab} f=${f} set=${set} disabled=${running} isNew=${isNew} />` : null}
+        ${tab === "general" ? html`<${GeneralTab} f=${f} set=${set} disabled=${false} locked=${running} isNew=${isNew} />` : null}
         ${tab === "network" ? html`<${NetworkTab} f=${f} set=${set} row=${row} disabled=${running} check=${check} setCheck=${setCheck} />` : null}
         ${tab === "fingerprint" ? html`<${FingerprintTab} f=${f} set=${set} row=${row} disabled=${running} />` : null}
         ${tab === "cookies" ? html`<${CookiesTab} row=${row} disabled=${running} />` : null}
@@ -478,7 +485,7 @@ export function ProfileDrawer() {
         <span class="muted small">${dirty ? "Unsaved changes" : ""}</span>
         <div class="inline">
           <${Button} onClick=${requestClose}>Cancel<//>
-          <${Button} kind="primary" type="submit" busy=${saving} disabled=${running}>${isNew ? "Create profile" : "Save"}<//>
+          <${Button} kind="primary" type="submit" busy=${saving}>${isNew ? "Create profile" : running ? "Save labels" : "Save"}<//>
         </div>
       </footer>
     </form>

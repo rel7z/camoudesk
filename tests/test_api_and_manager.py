@@ -82,7 +82,7 @@ class TestProcessManagerAndApi(unittest.TestCase):
         self.assertEqual(launched["mode"], MODE_DIRECT)  # credentials are handled by the forwarder
 
         # Editing while running must be rejected safely
-        self.assertFalse(self.api.profiles_update(pid, {"name": "Blocked Rename"})["ok"])
+        self.assertFalse(self.api.profiles_update(pid, {"os": "linux"})["ok"])  # system settings lock while running
 
         row = next(r for r in self.api.profiles_list()["data"] if r["id"] == pid)
         self.assertEqual((row["status"], row["pid"], row["mode"]), ("running", launched["pid"], MODE_DIRECT))
