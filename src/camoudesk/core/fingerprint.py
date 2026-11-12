@@ -12,6 +12,7 @@ from camoufox.fingerprints import generate_fingerprint
 from camoudesk.models.profile import FingerprintSummary, validate_os_target
 
 FINGERPRINT_FILENAME = "fingerprint.json"
+_SCREEN_ATTEMPTS = 8
 
 
 def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -58,12 +59,21 @@ def generate_and_save_fingerprint(
         from camoufox.fingerprints import Screen
 
         w, h = screen
-        try:
-            raw_fp = generate_fingerprint(
-                os=normalized_os, screen=Screen(min_width=w, max_width=w, min_height=h, max_height=h)
-            )
-        except Exception as exc:
-            raise ValueError(f"No realistic {normalized_os} device has a {w}x{h} screen; pick another size.") from exc
+        bound = Screen(min_width=w, max_width=w, min_height=h, max_height=h)
+        raw_fp = None
+        # fpgen does not always honour the bound (2560x1440 on Windows came back as 3440x1440
+        # about 1 in 8 times), so verify the result and retry rather than save the wrong size.
+        for _ in range(_SCREEN_ATTEMPTS):
+            try:
+                candidate = generate_fingerprint(os=normalized_os, screen=bound)
+            except Exception as exc:
+                raise ValueError(f"No realistic {normalized_os} device has a {w}x{h} screen; pick another size.") from exc
+            scr = candidate.get("screen") or {}
+            if scr.get("width") == w and scr.get("height") == h:
+                raw_fp = candidate
+                break
+        if raw_fp is None:
+            raise ValueError(f"Could not generate a {normalized_os} fingerprint with a {w}x{h} screen; pick another size.")
     else:
         raw_fp = generate_fingerprint(os=normalized_os)
     # Round-trip via JSON so stored and in-memory structures match identically.
