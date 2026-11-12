@@ -47,8 +47,10 @@ def main() -> None:
     manager.add_listener(_push_status)
     api.set_proxy_notifier(_push_proxies)
     manager.start_monitor()
+    api.sync_api_server()  # local REST API, if enabled in Settings
 
     def _on_closing() -> None:
+        api.shutdown_api_server()
         manager.stop_monitor()
         manager.stop_all()
 

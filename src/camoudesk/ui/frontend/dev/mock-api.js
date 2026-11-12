@@ -214,6 +214,8 @@ export function installMockApi() {
     cookies_import_text: guard(async (id, text) => { await sleep(900); return { imported: (text.match(/"name"/g) || []).length || 1, total: 138 }; }),
     cookies_import_file: guard(() => ({ imported: 0, cancelled: true })),
     cookies_clear: guard(() => ({ cleared: true })),
+    api_status: guard(() => ({ enabled: settings.api.enabled, running: settings.api.enabled, port: settings.api.port, token: settings.api.enabled ? "mock-token-3f9a2c" : "", error: "" })),
+    api_rotate_token: guard(() => ({ token: "mock-token-rotated" })),
     settings_get: guard(() => settings),
     settings_update: guard((patch) => {
       settings = { ...settings, ...patch, new_profile: { ...settings.new_profile, ...(patch.new_profile || {}) }, api: { ...settings.api, ...(patch.api || {}) } };

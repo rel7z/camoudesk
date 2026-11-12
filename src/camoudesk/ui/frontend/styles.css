@@ -315,3 +315,4 @@ button:disabled { cursor: default; }
 :root[data-theme="light"] .pill-tag { color: hsl(var(--tag-h), 55%, 35%); }
 @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .pill-tag { color: hsl(var(--tag-h), 55%, 35%); } }
 .table tbody tr.no-click { cursor: default; }
+.code { font: 11.5px/1.55 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px; white-space: pre-wrap; word-break: break-all; user-select: text; color: var(--text); }

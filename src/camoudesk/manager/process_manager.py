@@ -36,6 +36,7 @@ from camoudesk.models.profile import Profile, ProxyConfig, sanitize_profile_id
 
 MODE_DIRECT = "direct"
 MODE_WORKER = "worker"
+MODE_SDK = "sdk"  # a user script using camoudesk.sdk; tracked, never launched by the manager
 _MODES = (MODE_DIRECT, MODE_WORKER)
 
 
@@ -174,7 +175,11 @@ class ProcessManager:
         self._monitor_stop.clear()
 
         def loop() -> None:
+            ticks = 0
             while not self._monitor_stop.wait(interval):
+                ticks += 1
+                if ticks % 6 == 0:
+                    self._adopt_running(only_new=True)  # e.g. an SDK script started meanwhile
                 with self._lock:
                     self._reap_finished_locked()
                 if self._dirty:
@@ -238,13 +243,21 @@ class ProcessManager:
         forwarder.start()
         return forwarder
 
-    def _adopt_running(self) -> None:
-        """Re-attach to browsers recorded in run.json that are still the same live process."""
+    def _adopt_running(self, only_new: bool = False) -> None:
+        """Re-attach to browsers recorded in run.json that are still the same live process.
+
+        ``only_new`` (periodic rescans) skips profiles this manager already tracks or is
+        starting/stopping, so it never touches records of its own launches.
+        """
         try:
             profiles = self.store.list_profiles()
         except RegistryCorruptError:
             return
         for profile in profiles:
+            if only_new:
+                with self._lock:
+                    if profile.id in self._runs or profile.id in self._transitions:
+                        continue
             path = self.store.run_file(profile.id)
             if not path.is_file():
                 continue
@@ -261,9 +274,15 @@ class ProcessManager:
                 self._clear_run_record(profile.id)
                 continue
             if not (run.started and run.alive(strict=True)):
-                self._clear_run_record(profile.id)
+                with self._lock:
+                    if profile.id not in self._runs:
+                        self._clear_run_record(profile.id)
                 continue
-            self._runs[profile.id] = run
+            with self._lock:
+                if profile.id in self._runs or profile.id in self._transitions:
+                    continue
+                self._runs[profile.id] = run
+                self._dirty = True
             upstream = resolve_network(profile, self.proxies).proxy
             if run.forward_port and upstream.has_credentials:
                 # The forwarder died with the previous GUI process; the browser's prefs still
@@ -650,6 +669,8 @@ class ProcessManager:
 
     @staticmethod
     def _gone(run: _Run) -> bool:
+        if run.mode == MODE_SDK:
+            return not _pid_alive(run.pid)  # a script is not necessarily a process-group leader
         if run.proc is not None:
             run.proc.poll()  # reap the leader so it does not linger as a zombie group member
         return not _group_alive(run.pgid)
@@ -676,12 +697,13 @@ class ProcessManager:
                 self._signal(run, signal.SIGTERM, group=False)
         pending = self._wait_gone(runs, timeout)
 
+        # SDK scripts are signalled by PID only: their process group may be the user's shell job.
         for run in pending:
-            self._signal(run, signal.SIGTERM, group=True)
+            self._signal(run, signal.SIGTERM, group=run.mode != MODE_SDK)
         pending = self._wait_gone(pending, 2.0)
 
         for run in pending:
-            self._signal(run, signal.SIGKILL, group=True)
+            self._signal(run, signal.SIGKILL, group=run.mode != MODE_SDK)
         return self._wait_gone(pending, 2.0)
 
     def stop(self, profile_id: str, timeout: float = 10.0) -> Dict[str, Any]:

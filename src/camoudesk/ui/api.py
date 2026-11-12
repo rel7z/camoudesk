@@ -645,7 +645,46 @@ class DesktopBridgeApi:
 
     @_bridge
     def settings_update(self, patch: Dict[str, Any]) -> Dict[str, Any]:
-        return self.settings.update(patch or {})
+        updated = self.settings.update(patch or {})
+        self.sync_api_server(updated)
+        return updated
+
+    # ------------------------------------------------------------------ local REST API
+
+    def sync_api_server(self, settings: Optional[Dict[str, Any]] = None) -> None:
+        """Start/stop the REST API to match settings; a bind failure is reported, not raised."""
+        from camoudesk.core import api_server
+
+        try:
+            self._api_server = api_server.sync_with_settings(
+                getattr(self, "_api_server", None), self, settings or self.settings.get()
+            )
+            self._api_error = ""
+        except OSError as exc:
+            self._api_server = None
+            self._api_error = f"Could not listen on the port ({exc.strerror or exc})"
+
+    def shutdown_api_server(self) -> None:
+        server = getattr(self, "_api_server", None)
+        if server is not None:
+            server.stop()
+            self._api_server = None
+
+    @_bridge
+    def api_status(self) -> Dict[str, Any]:
+        cfg = self.settings.get()["api"]
+        server = getattr(self, "_api_server", None)
+        return {
+            "enabled": cfg["enabled"],
+            "running": bool(server and server.running),
+            "port": server.port if server else cfg["port"],
+            "token": cfg["token"],
+            "error": getattr(self, "_api_error", ""),
+        }
+
+    @_bridge
+    def api_rotate_token(self) -> Dict[str, Any]:
+        return {"token": self.settings.rotate_api_token()}
 
     @_bridge
     def geoip_download(self) -> Dict[str, Any]:

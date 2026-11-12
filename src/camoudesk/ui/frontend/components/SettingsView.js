@@ -2,7 +2,7 @@
 import { html, useEffect, useMemo, useState } from "../vendor/preact-htm.module.js";
 import { call } from "../lib/api.js";
 import { applyTheme, refreshSettings } from "../lib/actions.js";
-import { setState, toast, useStore } from "../lib/store.js";
+import { confirmDialog, setState, toast, useStore } from "../lib/store.js";
 import { LOCALES, OS_LABELS, copyText, timezones } from "../lib/util.js";
 import { Icon } from "./icons.js";
 import { Button, Field, Segmented, Select, TextArea, TextInput, Toggle } from "./ui.js";
@@ -12,6 +12,57 @@ function Section({ title, desc, children }) {
     <div class="settings-intro"><h2>${title}</h2>${desc ? html`<p class="muted">${desc}</p>` : null}</div>
     <div class="settings-body">${children}</div>
   </section>`;
+}
+
+function ApiSection() {
+  const [st, setSt] = useState(null);
+  const [port, setPort] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    try { const s = await call("api_status"); setSt(s); setPort(String(s.port)); } catch (err) { toast(err.message, "error"); }
+  };
+  useEffect(() => { load(); }, []);
+  if (!st) return null;
+  const apply = async (patch) => {
+    setBusy(true);
+    try {
+      const next = await call("settings_update", { api: patch });
+      setState({ settings: next });
+      await load();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+    setBusy(false);
+  };
+  const rotate = async () => {
+    const ok = await confirmDialog({ title: "Generate a new token?", message: "Scripts using the old token will stop working until you update them.", confirmLabel: "New token", danger: true });
+    if (!ok) return;
+    await call("api_rotate_token");
+    await load();
+    toast("New API token generated", "success");
+  };
+  const base = `http://127.0.0.1:${st.port}`;
+  const curl = `curl -H "Authorization: Bearer ${st.token || "<token>"}" ${base}/v1/profiles`;
+  const sdk = `from camoudesk.sdk import open_profile\n\nwith open_profile("PROFILE_ID") as context:\n    page = context.new_page()\n    page.goto("https://example.com")`;
+  return html`<${Section} title="Automation" desc="Control profiles from scripts. The REST API only listens on this Mac (127.0.0.1) and needs the token.">
+    <${Toggle} checked=${st.enabled} disabled=${busy} onChange=${(enabled) => apply({ enabled })}
+      label="Local REST API" hint=${st.enabled ? (st.running ? `Listening on ${base}` : st.error || "Not running") : "Off"} />
+    ${st.enabled ? html`
+      <div class="grid-2">
+        <${Field} label="Port"><div class="inline"><${TextInput} mono value=${port} onInput=${setPort} />
+          <${Button} disabled=${busy || String(st.port) === port} onClick=${() => apply({ port: Number(port) })}>Apply<//></div><//>
+        <div />
+      </div>
+      <${Field} label="Token" wide hint="Send as: Authorization: Bearer <token>">
+        <div class="inline"><${TextInput} mono value=${st.token} disabled />
+          <${Button} icon="copy" onClick=${async () => { await copyText(st.token); toast("Token copied", "success"); }}>Copy<//>
+          <${Button} icon="refresh" onClick=${rotate}>New token<//></div>
+      <//>
+      <${Field} label="Try it" wide><pre class="code">${curl}</pre><//>` : null}
+    <${Field} label="Python SDK (full browser automation)" wide hint="Runs in your own script with the profile's identity, proxy and cookies. The profile shows as running here.">
+      <pre class="code">${sdk.replaceAll("\\n", "\n")}</pre>
+    <//>
+  <//>`;
 }
 
 export function SettingsView() {
@@ -84,6 +135,8 @@ export function SettingsView() {
       </div>
       <div><${Button} icon="download" busy=${downloading} disabled=${!geoip.available} onClick=${downloadGeoip}>${geoip.installed ? "Update database" : "Download database"}<//></div>
     <//>
+
+    <${ApiSection} />
 
     <${Section} title="Appearance">
       <${Segmented} value=${settings.theme} onChange=${(theme) => save({ theme }, true)} options=${[
