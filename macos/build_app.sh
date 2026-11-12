@@ -99,8 +99,28 @@ else
   tar -xzf "$ARCHIVE_PATH" -C "$RESOURCES"   # creates $RESOURCES/python
   BUNDLED_PY="$RESOURCES/python/bin/python3"
 
-  echo "[*] Installing CamouDesk and dependencies into the bundle"
-  "$BUNDLED_PY" -m pip install --quiet --no-cache-dir --disable-pip-version-check --no-warn-script-location "$REPO_DIR"
+  # Dependencies: exact versions from macos/requirements.lock, as binary wheels kept in a
+  # persistent cache, so rebuilds are reproducible and need no network once the cache is warm.
+  LOCK="$SCRIPT_DIR/requirements.lock"
+  WHEELS="$CACHE_DIR/wheels"
+  PIP=("$BUNDLED_PY" -m pip --disable-pip-version-check)
+  mkdir -p "$WHEELS"
+  if ! "${PIP[@]}" install --quiet --no-index --find-links "$WHEELS" --no-warn-script-location -r "$LOCK" 2>/dev/null; then
+    echo "[*] Fetching missing wheels into $WHEELS"
+    # `pip wheel` reuses published wheels and builds wheels for source-only packages
+    # (e.g. pywebview's proxy_tools), so every later install is wheel-only and offline.
+    "${PIP[@]}" wheel --quiet --prefer-binary -r "$LOCK" -w "$WHEELS"
+    echo "[*] Installing dependencies from the wheel cache"
+    "${PIP[@]}" install --quiet --no-index --find-links "$WHEELS" --no-warn-script-location -r "$LOCK"
+  else
+    echo "[*] Installed dependencies from the wheel cache (offline)"
+  fi
+
+  # CamouDesk itself is pure Python: copy the package (with its frontend) into site-packages.
+  echo "[*] Installing CamouDesk"
+  SITE="$("$BUNDLED_PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+  rsync -a --exclude '__pycache__' --exclude '*.pyc' "$REPO_DIR/src/camoudesk" "$SITE/"
+  "$BUNDLED_PY" -m compileall -q "$SITE/camoudesk"
 
   # Camoufox installs fpgen's fingerprint model into fpgen's own package directory on first use.
   # Inside a signed .app that write breaks the code seal (or fails on a read-only volume), so
