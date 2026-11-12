@@ -43,6 +43,7 @@ def main() -> None:
         except Exception:
             pass
 
+    api.set_window(window)
     manager.add_listener(_push_status)
     api.set_proxy_notifier(_push_proxies)
     manager.start_monitor()

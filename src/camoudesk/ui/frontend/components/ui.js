@@ -81,6 +81,7 @@ const STATUS = {
   running: ["Running", "ok"],
   starting: ["Starting", "busy"],
   stopping: ["Stopping", "busy"],
+  busy: ["Working", "busy"],
   stopped: ["Stopped", "idle"],
 };
 

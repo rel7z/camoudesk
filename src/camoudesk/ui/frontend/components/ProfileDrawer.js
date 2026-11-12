@@ -11,6 +11,7 @@ const TABS = [
   { value: "general", label: "General", icon: "edit" },
   { value: "network", label: "Network", icon: "proxy" },
   { value: "fingerprint", label: "Fingerprint", icon: "fingerprint" },
+  { value: "cookies", label: "Cookies", icon: "cookie" },
   { value: "advanced", label: "Advanced", icon: "terminal" },
 ];
 
@@ -280,6 +281,64 @@ function FingerprintTab({ f, set, row, disabled }) {
   </div>`;
 }
 
+function CookiesTab({ row, disabled }) {
+  const [summary, setSummary] = useState(null);
+  const [paste, setPaste] = useState("");
+  const [busy, setBusy] = useState("");
+  const load = async () => {
+    try { setSummary(await call("cookies_summary", row.id)); } catch (err) { toast(err.message, "error"); }
+  };
+  useEffect(() => { if (row) load(); }, [row?.id, row?.status]);
+  if (!row) return html`<p class="note"><${Icon} name="info" /> Create the profile first, then import cookies into it here.</p>`;
+
+  const run = async (what, fn) => {
+    setBusy(what);
+    try { await fn(); } catch (err) { toast(err.message, "error", 8000); }
+    setBusy("");
+    load();
+  };
+  const reportImport = (res) => {
+    if (res.cancelled) return;
+    toast(`Imported ${res.imported} cookie${res.imported === 1 ? "" : "s"} (${res.total} in profile)`, "success");
+    setPaste("");
+  };
+  const save = (fmt) => run(`save-${fmt}`, async () => {
+    const res = await call("cookies_save", row.id, fmt);
+    if (res.saved) toast(`Saved ${res.count} cookies to ${res.path}`, "success", 6000);
+  });
+  const clear = async () => {
+    const ok = await confirmDialog({ title: "Clear all cookies?", message: "This signs the profile out of every site. It cannot be undone.", confirmLabel: "Clear cookies", danger: true });
+    if (ok) run("clear", async () => { await call("cookies_clear", row.id); toast("Cookies cleared", "success"); });
+  };
+  return html`<div class="form">
+    <div class="cookie-head">
+      <div><div class="cookie-total">${summary ? summary.total : "—"}</div><div class="muted small">cookies stored</div></div>
+      <${IconButton} icon="refresh" title="Refresh" onClick=${load} />
+    </div>
+    ${summary && summary.sites.length ? html`<div class="site-list">${summary.sites.slice(0, 12).map((x) => html`<div class="site-row"><span>${x.site}</span><span class="muted">${x.count}</span></div>`)}
+      ${summary.sites.length > 12 ? html`<div class="muted small">+ ${summary.sites.length - 12} more sites</div>` : null}</div>` : null}
+
+    <div class="divider" />
+    <${Field} label="Import cookies" wide hint="JSON (browser-extension or Playwright format) or Netscape cookies.txt. The profile must be stopped.">
+      <${TextArea} mono rows=${4} value=${paste} disabled=${disabled || busy} onInput=${setPaste} placeholder='[{"domain": ".example.com", "name": "session", "value": "…"}]' />
+    <//>
+    <div class="inline">
+      <${Button} icon="upload" busy=${busy === "file"} disabled=${disabled || busy} onClick=${() => run("file", async () => reportImport(await call("cookies_import_file", row.id)))}>Choose file…<//>
+      <${Button} kind="primary" busy=${busy === "paste"} disabled=${disabled || busy || !paste.trim()} onClick=${() => run("paste", async () => reportImport(await call("cookies_import_text", row.id, paste)))}>Import pasted<//>
+    </div>
+
+    <div class="divider" />
+    <span class="field-label">Export</span>
+    <div class="inline wrap-row">
+      <${Button} icon="download" busy=${busy === "save-json"} disabled=${!!busy} onClick=${() => save("json")}>Save JSON…<//>
+      <${Button} icon="download" busy=${busy === "save-netscape"} disabled=${!!busy} onClick=${() => save("netscape")}>Save cookies.txt…<//>
+      <${Button} icon="copy" disabled=${!!busy} onClick=${() => run("copy", async () => { await copyText(await call("cookies_export_text", row.id, "json")); toast("Cookies copied as JSON", "success"); })}>Copy JSON<//>
+      <div class="toolbar-spacer" />
+      <${Button} kind="danger-ghost" icon="trash" busy=${busy === "clear"} disabled=${disabled || !!busy} onClick=${clear}>Clear all<//>
+    </div>
+  </div>`;
+}
+
 function LogsPanel({ row }) {
   const [logs, setLogs] = useState("");
   const preRef = useRef();
@@ -412,6 +471,7 @@ export function ProfileDrawer() {
         ${tab === "general" ? html`<${GeneralTab} f=${f} set=${set} disabled=${running} isNew=${isNew} />` : null}
         ${tab === "network" ? html`<${NetworkTab} f=${f} set=${set} row=${row} disabled=${running} check=${check} setCheck=${setCheck} />` : null}
         ${tab === "fingerprint" ? html`<${FingerprintTab} f=${f} set=${set} row=${row} disabled=${running} />` : null}
+        ${tab === "cookies" ? html`<${CookiesTab} row=${row} disabled=${running} />` : null}
         ${tab === "advanced" ? html`<${AdvancedTab} f=${f} set=${set} row=${row} disabled=${running} />` : null}
       </div>
       <footer class="drawer-foot">

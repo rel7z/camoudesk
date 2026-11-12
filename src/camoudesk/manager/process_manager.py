@@ -385,6 +385,8 @@ class ProcessManager:
                 return {"ok": True, "pid": run.pid, "mode": run.mode, "already_running": True}
             if current == "stopping":
                 return {"ok": False, "error": "This profile is still shutting down; try again in a moment."}
+            if current == "busy":
+                return {"ok": False, "error": "This profile is busy (importing cookies); try again in a moment."}
             if current == "starting":
                 return {"ok": True, "pid": None, "mode": None, "already_running": True}
             self._transitions[safe_id] = "starting"
@@ -422,6 +424,61 @@ class ProcessManager:
 
         threading.Thread(target=run, name=f"camoudesk-stop-{safe_id}", daemon=True).start()
         return {"ok": True, "was_running": True, "stopping": True}
+
+    def _begin_busy(self, safe_id: str) -> None:
+        with self._lock:
+            self._reap_finished_locked()
+            if safe_id in self._runs:
+                raise ValueError("Stop the profile first.")
+            if self._transitions.get(safe_id):
+                raise ValueError("This profile is busy; try again in a moment.")
+            self._transitions[safe_id] = "busy"
+        self._notify()
+
+    def _end_busy(self, safe_id: str) -> None:
+        with self._lock:
+            self._transitions.pop(safe_id, None)
+        self._notify()
+
+    def import_cookies(self, profile_id: str, cookies: List[Dict[str, Any]], timeout: float = 180.0) -> Dict[str, Any]:
+        """Add cookies through a short headless run of the profile (Firefox writes cookies.sqlite)."""
+        safe_id = sanitize_profile_id(profile_id)
+        if self.store.get_profile(safe_id) is None:
+            raise KeyError("Profile not found")
+        self._begin_busy(safe_id)
+        tmp_path = self.store.profile_dir(safe_id) / ".cookie-import.json"
+        try:
+            tmp_path.write_text(json.dumps(cookies), encoding="utf-8")
+            os.chmod(tmp_path, 0o600)
+            cmd = self._cookie_import_command(safe_id, tmp_path)
+            try:
+                proc = subprocess.run(
+                    cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout, env=_build_worker_env()
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("Cookie import timed out") from exc
+            for line in proc.stdout.splitlines():
+                if line.startswith("[RESULT] "):
+                    return json.loads(line[len("[RESULT] "):])
+            errors = [ln for ln in (proc.stderr + proc.stdout).splitlines() if ln.startswith("[ERROR]")]
+            raise RuntimeError(errors[-1][len("[ERROR] "):] if errors else f"Cookie import failed (exit {proc.returncode})")
+        finally:
+            tmp_path.unlink(missing_ok=True)
+            self._end_busy(safe_id)
+
+    def _cookie_import_command(self, safe_id: str, cookie_file: Path) -> List[str]:
+        return [self.python_executable, "-m", "camoudesk.core.browser_worker", "--profile-id", safe_id,
+                "--import-cookies", str(cookie_file)]
+
+    def clear_cookies(self, profile_id: str) -> None:
+        safe_id = sanitize_profile_id(profile_id)
+        self._begin_busy(safe_id)
+        try:
+            ff = self.store.firefox_data_dir(safe_id)
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                (ff / f"cookies.sqlite{suffix}").unlink(missing_ok=True)
+        finally:
+            self._end_busy(safe_id)
 
     def diagnostics(self, profile_id: str) -> str:
         """Masked, copyable launch summary for bug reports (never contains proxy credentials)."""

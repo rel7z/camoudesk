@@ -292,3 +292,11 @@ button:disabled { cursor: default; }
 .menu-pop .menu-title { padding: 6px 9px 4px; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.4px; }
 .menu-up .menu-pop { top: auto; bottom: calc(100% + 6px); max-height: 320px; overflow: auto; }
 .nowrap { white-space: nowrap; }
+
+/* ---------------------------------------------------------------- cookies */
+.cookie-head { display: flex; align-items: center; justify-content: space-between; }
+.cookie-total { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.site-list { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-2); }
+.site-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; min-width: 0; }
+.site-row span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wrap-row { flex-wrap: wrap; }

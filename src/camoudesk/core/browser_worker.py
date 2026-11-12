@@ -91,13 +91,48 @@ def run_worker(
     return 0
 
 
+def run_cookie_import(profile_id: str, cookie_file: str) -> int:
+    """Write cookies into the profile through Firefox itself (headless), then exit.
+
+    Prints one ``[RESULT] {json}`` line with the number of cookies the profile now holds.
+    """
+    import json
+
+    store = ProfileStore()
+    profile = store.get_profile(profile_id)
+    if profile is None:
+        print(f"[ERROR] Profile '{profile_id}' not found.", file=sys.stderr, flush=True)
+        return 2
+    try:
+        with open(cookie_file, "r", encoding="utf-8") as fh:
+            cookies = json.load(fh)
+    except (OSError, ValueError) as exc:
+        print(f"[ERROR] Could not read cookies: {exc}", file=sys.stderr, flush=True)
+        return 2
+    network = resolve_network(profile, ProxyStore(store.app_dir))
+    kwargs, _ = profile_camoufox_kwargs(profile, store, network, headless=True)
+    try:
+        with Camoufox(**kwargs) as context:
+            before = len(context.cookies())
+            context.add_cookies(cookies)
+            after = len(context.cookies())
+    except Exception as exc:
+        print(f"[ERROR] Cookie import failed: {exc}", file=sys.stderr, flush=True)
+        return 1
+    print("[RESULT] " + json.dumps({"requested": len(cookies), "before": before, "after": after}), flush=True)
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="CamouDesk Persistent Browser Worker")
     parser.add_argument("--profile-id", required=True, help="Target profile ID")
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     parser.add_argument("--url", help="Override startup URL")
     parser.add_argument("--max-seconds", type=float, default=None, help="Optional test lifetime limit")
+    parser.add_argument("--import-cookies", metavar="FILE", help="Add cookies from a JSON file, then exit")
     args = parser.parse_args()
+    if args.import_cookies:
+        raise SystemExit(run_cookie_import(args.profile_id, args.import_cookies))
     raise SystemExit(
         run_worker(
             profile_id=args.profile_id,

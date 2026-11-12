@@ -193,6 +193,13 @@ export function installMockApi() {
       const px = payload.proxy_id && proxies.find((x) => x.id === payload.proxy_id);
       return px ? { ...px.last_check, ok: true, locale: px.last_check.country_code === "DE" ? "de-DE" : "en-US" } : { ok: true, ip: "203.0.113.10", country: "Indonesia", country_code: "ID", city: "Jakarta", timezone: "Asia/Jakarta", latency_ms: 184, locale: "id-ID" };
     }),
+    cookies_summary: guard((id) => find(id).proxy_mode === "none" ? { total: 0, sites: [] }
+      : { total: 137, sites: [["google.com", 41], ["amazon.com", 28], ["facebook.com", 19], ["youtube.com", 15], ["doubleclick.net", 12], ["shopify.com", 9], ["cloudflare.com", 7], ["github.com", 6]].map(([site, count]) => ({ site, count })) }),
+    cookies_export_text: guard(() => "[]"),
+    cookies_save: guard(() => ({ saved: true, path: "/Users/demo/Downloads/cookies.json", count: 137 })),
+    cookies_import_text: guard(async (id, text) => { await sleep(900); return { imported: (text.match(/"name"/g) || []).length || 1, total: 138 }; }),
+    cookies_import_file: guard(() => ({ imported: 0, cancelled: true })),
+    cookies_clear: guard(() => ({ cleared: true })),
     settings_get: guard(() => settings),
     settings_update: guard((patch) => {
       settings = { ...settings, ...patch, new_profile: { ...settings.new_profile, ...(patch.new_profile || {}) }, api: { ...settings.api, ...(patch.api || {}) } };

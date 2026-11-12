@@ -8,12 +8,14 @@ and an empty password in an update means "keep the stored one".
 
 from concurrent.futures import ThreadPoolExecutor
 import functools
+import os
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
 
 from camoudesk import __version__
+from camoudesk.core import cookies as cookies_mod
 from camoudesk.core import geoip_db
 from camoudesk.core.geo import locale_for_country
 from camoudesk.core.launcher import SCREEN_PRESETS, gpu_options, resolve_network
@@ -119,6 +121,22 @@ class DesktopBridgeApi:
         self._checking: Set[str] = set()
         self._checking_lock = threading.Lock()
         self._notify_proxies: Callable[[], None] = lambda: None
+
+    def set_window(self, window: Any) -> None:
+        """The pywebview window, used for native open/save dialogs."""
+        self._window = window
+
+    def _dialog(self, kind: str, **kwargs: Any) -> Optional[str]:
+        import webview
+
+        window = getattr(self, "_window", None)
+        if window is None:
+            raise RuntimeError("File dialogs are only available in the desktop app")
+        dialog_type = {"open": webview.FileDialog.OPEN, "save": webview.FileDialog.SAVE}[kind]
+        result = window.create_file_dialog(dialog_type, **kwargs)
+        if not result:
+            return None
+        return result if isinstance(result, str) else result[0]
 
     def set_proxy_notifier(self, callback: Callable[[], None]) -> None:
         """Called (from worker threads) when saved proxies change, e.g. as checks finish."""
@@ -422,6 +440,66 @@ class DesktopBridgeApi:
         if not cfg.is_configured:
             raise ValueError("Enter a proxy first")
         return _with_locale(check_proxy_config(cfg))
+
+    # ------------------------------------------------------------------ cookies
+
+    def _profile_cookies(self, profile_id: str) -> List[Dict[str, Any]]:
+        if self.store.get_profile(profile_id) is None:
+            raise KeyError("Profile not found")
+        return cookies_mod.read_profile_cookies(self.store.firefox_data_dir(profile_id))
+
+    @_bridge
+    def cookies_summary(self, profile_id: str) -> Dict[str, Any]:
+        total, sites = cookies_mod.summarize(self._profile_cookies(profile_id))
+        return {"total": total, "sites": sites}
+
+    @_bridge
+    def cookies_export_text(self, profile_id: str, fmt: str = "json") -> str:
+        cookies = self._profile_cookies(profile_id)
+        return cookies_mod.to_netscape(cookies) if fmt == "netscape" else cookies_mod.to_json(cookies)
+
+    @_bridge
+    def cookies_save(self, profile_id: str, fmt: str = "json") -> Dict[str, Any]:
+        profile = self.store.get_profile(profile_id)
+        if profile is None:
+            raise KeyError("Profile not found")
+        cookies = cookies_mod.read_profile_cookies(self.store.firefox_data_dir(profile_id))
+        text = cookies_mod.to_netscape(cookies) if fmt == "netscape" else cookies_mod.to_json(cookies)
+        safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in profile.name)[:40] or profile.id
+        path = self._dialog("save", save_filename=f"{safe_name}-cookies.{'txt' if fmt == 'netscape' else 'json'}")
+        if not path:
+            return {"saved": False}
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return {"saved": True, "path": path, "count": len(cookies)}
+
+    def _import(self, profile_id: str, text: str) -> Dict[str, Any]:
+        if self.manager.is_running(profile_id):
+            raise ValueError("Stop the profile before importing cookies.")
+        cookies = cookies_mod.parse_cookies(text)
+        result = self.manager.import_cookies(profile_id, cookies)
+        return {"imported": len(cookies), "total": result.get("after")}
+
+    @_bridge
+    def cookies_import_text(self, profile_id: str, text: str) -> Dict[str, Any]:
+        return self._import(profile_id, str(text or ""))
+
+    @_bridge
+    def cookies_import_file(self, profile_id: str) -> Dict[str, Any]:
+        path = self._dialog("open", file_types=("Cookie files (*.json;*.txt)", "All files (*.*)"))
+        if not path:
+            return {"imported": 0, "cancelled": True}
+        if os.path.getsize(path) > 5 * 1024 * 1024:
+            raise ValueError("Cookie file is larger than 5 MB")
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return self._import(profile_id, fh.read())
+
+    @_bridge
+    def cookies_clear(self, profile_id: str) -> Dict[str, Any]:
+        if self.manager.is_running(profile_id):
+            raise ValueError("Stop the profile before clearing cookies.")
+        self.manager.clear_cookies(profile_id)
+        return {"cleared": True}
 
     # ------------------------------------------------------------------ settings
 
