@@ -18,13 +18,15 @@ def main() -> None:
 
     index_file = FRONTEND_DIR / "index.html"
     window = webview.create_window(
-        title="CamouDesk — Open-Source Anti-Detect Manager",
-        url=index_file.resolve().as_uri(),
+        title="CamouDesk",
+        # Served by pywebview's loopback HTTP server (see start below): WebKit will not load
+        # ES modules from file:// URLs. Bridge calls still use pywebview's native channel.
+        url=str(index_file.resolve()),
         js_api=api,
-        width=1160,
-        height=760,
-        min_size=(960, 620),
-        background_color="#0d1017",
+        width=1280,
+        height=800,
+        min_size=(1040, 640),
+        background_color="#0f1115",
         text_select=True,
     )
 
@@ -43,7 +45,7 @@ def main() -> None:
         manager.stop_all()
 
     window.events.closing += _on_closing
-    webview.start(debug=False)
+    webview.start(debug=False, http_server=True, private_mode=True)
 
 
 if __name__ == "__main__":

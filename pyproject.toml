@@ -41,7 +41,7 @@ camoudesk-gui = "camoudesk.ui.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"camoudesk.ui" = ["frontend/*"]
+"camoudesk.ui" = ["frontend/*", "frontend/*/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

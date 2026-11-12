@@ -70,27 +70,29 @@ class TestProcessManagerAndApi(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_launch_logs_status_and_edit_guard(self) -> None:
-        created = self.api.create_profile({"name": "Worker Test", "os": "macos", "proxy": "http://u:secret@127.0.0.1:8888"})
+        created = self.api.profiles_create({"name": "Worker Test", "os": "macos", "proxy": "http://u:secret@127.0.0.1:8888"})
         self.assertTrue(created["ok"])
         pid = created["data"]["id"]
-        self.assertNotIn("secret", created["data"]["proxy_masked"])
+        self.assertNotIn("secret", json.dumps(created["data"]))  # no password anywhere in the row
+        self.assertTrue(created["data"]["proxy_parts"]["has_password"])
 
-        launched = self.api.launch_profile(pid)
-        self.assertTrue(launched["ok"], launched)
+        res = self.api.profiles_launch(pid)
+        self.assertTrue(res["ok"], res)
+        launched = res["data"]
         self.assertEqual(launched["mode"], MODE_DIRECT)  # credentials are handled by the forwarder
 
         # Editing while running must be rejected safely
-        self.assertFalse(self.api.update_profile(pid, {"name": "Blocked Rename"})["ok"])
+        self.assertFalse(self.api.profiles_update(pid, {"name": "Blocked Rename"})["ok"])
 
-        row = next(r for r in self.api.list_profiles()["data"] if r["id"] == pid)
+        row = next(r for r in self.api.profiles_list()["data"] if r["id"] == pid)
         self.assertEqual((row["status"], row["pid"], row["mode"]), ("running", launched["pid"], MODE_DIRECT))
 
-        stopped = self.api.stop_profile(pid)
-        self.assertTrue(stopped["ok"] and stopped["stopping"])  # returns at once; stop runs in background
+        stopped = self.api.profiles_stop(pid)
+        self.assertTrue(stopped["ok"] and stopped["data"]["stopping"])  # returns at once; stop runs in background
         self.assertTrue(self._wait_status(pid, "stopped"))
         self.assertFalse(_group_alive(launched["pid"]))
 
-        edit_ok = self.api.update_profile(pid, {"name": "Renamed Cleanly"})
+        edit_ok = self.api.profiles_update(pid, {"name": "Renamed Cleanly"})
         self.assertTrue(edit_ok["ok"])
         self.assertEqual(edit_ok["data"]["name"], "Renamed Cleanly")
 
@@ -120,7 +122,7 @@ class TestProcessManagerAndApi(unittest.TestCase):
     def test_crashed_browser_surfaces_log_tail(self) -> None:
         self.manager.script = 'echo "[ERROR] Proxy connection refused"; exit 1'
         prof_id = self.store.list_profiles()[0].id
-        self.assertTrue(self.api.launch_profile(prof_id)["ok"])
+        self.assertTrue(self.api.profiles_launch(prof_id)["ok"])
 
         deadline = time.monotonic() + 5
         while self.manager.is_running(prof_id) and time.monotonic() < deadline:
@@ -130,7 +132,7 @@ class TestProcessManagerAndApi(unittest.TestCase):
         self.assertIn("Proxy connection refused", st["last_error"])
         self.assertFalse(self.store.run_file(prof_id).exists())
 
-        logs_res = self.api.get_profile_logs(prof_id)
+        logs_res = self.api.profiles_logs(prof_id)
         self.assertTrue(logs_res["ok"])
         self.assertIn("Proxy connection refused", logs_res["data"])
 
@@ -263,7 +265,7 @@ os._exit(0)
         try:
             prof = self.store.create_profile({"name": "Diag", "proxy": f"http://u:diag-secret@127.0.0.1:{upstream.port}"})
             self.manager.launch(prof.id)
-            text = self.api.get_diagnostics(prof.id)["data"]
+            text = self.api.profiles_diagnostics(prof.id)["data"]
             self.assertNotIn("diag-secret", text)
             self.assertIn("credentials: yes", text)
             self.assertIn("network.proxy.http", text)  # the forwarder prefs Firefox actually uses
@@ -368,7 +370,7 @@ os._exit(0)
     def test_delete_refused_while_browser_survives(self) -> None:
         prof = self.store.create_profile({"name": "Sticky"})
         with patch.object(self.manager, "stop", return_value={"ok": False, "exited": False}):
-            res = self.api.delete_profile(prof.id)
+            res = self.api.profiles_delete(prof.id)
         self.assertFalse(res["ok"])
         self.assertTrue(self.store.profile_dir(prof.id).exists())
         self.assertIsNotNone(self.store.get_profile(prof.id))
