@@ -1,6 +1,9 @@
 let allProfiles = [];
 let currentOsFilter = "all";
 let pendingDeleteId = null;
+// Exit IP of the last successful proxy test, saved with the profile so launches can geo-match
+// (timezone, locale, coordinates, WebRTC IP) without a network round-trip.
+let lastProxyTest = null;
 
 function showToast(msg, kind = "info") {
   const toast = document.getElementById("toast");
@@ -89,7 +92,7 @@ function renderProfiles() {
     if (p.last_used_at) subParts.push(`Last used ${p.last_used_at}`);
     else subParts.push(`Created ${p.created_at || "recently"}`);
     if (p.notes) subParts.push(p.notes);
-    if (running && p.pid) subParts.push(`PID ${p.pid}`);
+    if (running && p.pid) subParts.push(`PID ${p.pid}${p.mode ? ` · ${p.mode}` : ""}`);
 
     const tr = document.createElement("tr");
     tr.innerHTML = `
@@ -162,6 +165,7 @@ function openCreateModal() {
   document.getElementById("f-webrtc").checked = true;
   document.getElementById("f-humanize").checked = true;
   document.getElementById("proxy-status").innerHTML = "";
+  lastProxyTest = null;
   document.getElementById("btn-regen-fp").style.display = "none";
   document.getElementById("profile-modal").classList.add("open");
 }
@@ -182,6 +186,7 @@ function openEditModal(id) {
   document.getElementById("f-webrtc").checked = prof.block_webrtc !== false;
   document.getElementById("f-humanize").checked = prof.humanize !== false;
   document.getElementById("proxy-status").innerHTML = "";
+  lastProxyTest = null;
   document.getElementById("btn-regen-fp").style.display = "inline-flex";
   document.getElementById("profile-modal").classList.add("open");
 }
@@ -220,6 +225,9 @@ async function saveProfileForm() {
     block_webrtc: document.getElementById("f-webrtc").checked,
     humanize: document.getElementById("f-humanize").checked,
   };
+  if (lastProxyTest && lastProxyTest.proxy === payload.proxy) {
+    payload.proxy_exit_ip = lastProxyTest.ip;
+  }
 
   const res = id
     ? await window.pywebview.api.update_profile(id, payload)
@@ -255,6 +263,7 @@ async function runProxyTest() {
   }
   statusEl.innerHTML = '<span style="color: #60a5fa;">Testing proxy connection...</span>';
   const res = await window.pywebview.api.test_proxy(proxyVal);
+  lastProxyTest = res.ok ? { proxy: proxyVal, ip: res.ip } : null;
   if (!res.ok) {
     statusEl.innerHTML = `<span style="color: #ef4444;">Failed: ${escapeHtml(res.error)}</span>`;
     return;

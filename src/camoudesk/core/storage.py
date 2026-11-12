@@ -1,5 +1,7 @@
 """Atomic JSON profile registry, persistent directory layout, and legacy migration."""
 
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -7,7 +9,7 @@ import shutil
 import tempfile
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Union
 
 from camoudesk.config import (
     DEFAULT_STARTUP_URL,
@@ -25,13 +27,24 @@ from camoudesk.core.fingerprint import (
 from camoudesk.models.profile import (
     Profile,
     ProxyConfig,
+    normalize_ip,
     sanitize_profile_id,
     validate_os_target,
 )
 
 
+class RegistryCorruptError(RuntimeError):
+    """Raised when registry.json exists but cannot be parsed; writes are refused to avoid data loss."""
+
+
+# A registry entry is either a validated Profile or the raw dict of an entry that failed
+# validation. Raw entries are never listed or launched, but they are written back untouched,
+# so one hand-edited or newer-schema entry is never silently erased by an unrelated write.
+_Entry = Union[Profile, Dict[str, Any]]
+
+
 class ProfileStore:
-    """Thread-safe profile registry backed by atomic JSON writes and isolated folders."""
+    """Process- and thread-safe profile registry backed by atomic JSON writes and isolated folders."""
 
     def __init__(
         self,
@@ -42,18 +55,33 @@ class ProfileStore:
         self.profiles_dir = (self.app_dir / "profiles") if app_dir else get_profiles_dir()
         self.logs_dir = (self.app_dir / "logs") if app_dir else get_logs_dir()
         self.registry_path = (self.app_dir / "registry.json") if app_dir else get_registry_path()
+        self.lock_path = self.registry_path.with_name("registry.lock")
         self.legacy_dir = (legacy_dir or get_legacy_profiles_dir()).resolve()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._initialize()
+
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        """Hold the in-process lock plus an advisory flock shared with browser worker processes."""
+        with self._lock:
+            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.lock_path, "a+") as lock_fh:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
     def _initialize(self) -> None:
         self.app_dir.mkdir(parents=True, exist_ok=True)
         self.profiles_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
-        if not self.registry_path.exists():
+        with self._locked():
+            if self.registry_path.exists():
+                return
             migrated = self._migrate_legacy_profiles()
             if migrated:
-                self._write_profiles(migrated)
+                self._write_entries(list(migrated))
             else:
                 starter = self._build_new_profile(
                     profile_id="prof_default_1",
@@ -63,7 +91,7 @@ class ProfileStore:
                     locale="id-ID",
                     startup_url=DEFAULT_STARTUP_URL,
                 )
-                self._write_profiles([starter])
+                self._write_entries([starter])
 
     def _migrate_legacy_profiles(self) -> List[Profile]:
         """Import profiles from prototype ~/.camoufox_profiles if present."""
@@ -95,30 +123,51 @@ class ProfileStore:
             migrated.append(profile)
         return migrated
 
-    def _read_profiles(self) -> List[Profile]:
+    def _backup_corrupt_registry(self) -> Path:
+        backup = self.registry_path.with_name(f"registry.corrupt-{time.strftime('%Y%m%d-%H%M%S')}.json")
+        if not backup.exists():
+            try:
+                shutil.copy2(self.registry_path, backup)
+            except OSError:
+                pass
+        return backup
+
+    def _read_entries(self) -> List[_Entry]:
+        """Read every registry entry, keeping invalid ones as raw dicts. Caller must hold the lock."""
         if not self.registry_path.is_file():
             return []
         try:
             with open(self.registry_path, "r", encoding="utf-8") as stream:
                 raw = json.load(stream)
-        except (OSError, json.JSONDecodeError):
-            return []
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            backup = self._backup_corrupt_registry()
+            raise RegistryCorruptError(
+                f"Profile registry {self.registry_path} is unreadable ({exc}). "
+                f"CamouDesk will not overwrite it; a copy was saved to {backup}."
+            ) from exc
         if not isinstance(raw, list):
-            return []
+            backup = self._backup_corrupt_registry()
+            raise RegistryCorruptError(
+                f"Profile registry {self.registry_path} is not a JSON list. "
+                f"CamouDesk will not overwrite it; a copy was saved to {backup}."
+            )
 
-        profiles: List[Profile] = []
+        entries: List[_Entry] = []
         for entry in raw:
             if not isinstance(entry, dict):
                 continue
             try:
-                profiles.append(Profile.from_dict(entry))
-            except ValueError:
-                continue
-        return profiles
+                entries.append(Profile.from_dict(entry))
+            except (ValueError, KeyError, TypeError):
+                entries.append(entry)
+        return entries
 
-    def _write_profiles(self, profiles: List[Profile]) -> None:
+    def _read_profiles(self) -> List[Profile]:
+        return [e for e in self._read_entries() if isinstance(e, Profile)]
+
+    def _write_entries(self, entries: List[_Entry]) -> None:
         self.registry_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = [p.to_dict() for p in profiles]
+        payload = [e.to_dict() if isinstance(e, Profile) else e for e in entries]
         fd, tmp_name = tempfile.mkstemp(prefix=".registry-", dir=str(self.registry_path.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -129,6 +178,10 @@ class ProfileStore:
                 os.unlink(tmp_name)
             raise
 
+    @staticmethod
+    def _find(entries: List[_Entry], safe_id: str) -> Optional[Profile]:
+        return next((e for e in entries if isinstance(e, Profile) and e.id == safe_id), None)
+
     def profile_dir(self, profile_id: str) -> Path:
         safe_id = sanitize_profile_id(profile_id)
         target = (self.profiles_dir / safe_id).resolve()
@@ -138,6 +191,10 @@ class ProfileStore:
 
     def firefox_data_dir(self, profile_id: str) -> Path:
         return self.profile_dir(profile_id) / "firefox_data"
+
+    def run_file(self, profile_id: str) -> Path:
+        """Path of the running-process record used to re-adopt browsers after a GUI restart."""
+        return self.profile_dir(profile_id) / "run.json"
 
     def log_file(self, profile_id: str) -> Path:
         safe_id = sanitize_profile_id(profile_id)
@@ -156,6 +213,7 @@ class ProfileStore:
         humanize: bool = True,
         notes: str = "",
         tags: Optional[List[str]] = None,
+        proxy_exit_ip: str = "",
     ) -> Profile:
         safe_id = sanitize_profile_id(profile_id)
         norm_os = validate_os_target(os_target)
@@ -171,6 +229,7 @@ class ProfileStore:
             name=name.strip() or safe_id,
             os=norm_os,
             proxy=norm_proxy,
+            proxy_exit_ip=normalize_ip(proxy_exit_ip) if norm_proxy else "",
             timezone=(timezone or "America/New_York").strip(),
             locale=(locale or "en-US").strip(),
             startup_url=(startup_url or DEFAULT_STARTUP_URL).strip(),
@@ -182,16 +241,13 @@ class ProfileStore:
         )
 
     def list_profiles(self) -> List[Profile]:
-        with self._lock:
+        with self._locked():
             return self._read_profiles()
 
     def get_profile(self, profile_id: str) -> Optional[Profile]:
         safe_id = sanitize_profile_id(profile_id)
-        with self._lock:
-            for profile in self._read_profiles():
-                if profile.id == safe_id:
-                    return profile
-        return None
+        with self._locked():
+            return self._find(self._read_entries(), safe_id)
 
     def create_profile(self, data: Dict[str, Any]) -> Profile:
         name = str(data.get("name") or "").strip()
@@ -210,18 +266,19 @@ class ProfileStore:
             humanize=bool(data.get("humanize", True)),
             notes=str(data.get("notes") or ""),
             tags=data.get("tags") if isinstance(data.get("tags"), list) else [],
+            proxy_exit_ip=str(data.get("proxy_exit_ip") or ""),
         )
-        with self._lock:
-            profiles = self._read_profiles()
-            profiles.insert(0, profile)
-            self._write_profiles(profiles)
+        with self._locked():
+            entries = self._read_entries()
+            entries.insert(0, profile)
+            self._write_entries(entries)
         return profile
 
     def update_profile(self, profile_id: str, updates: Dict[str, Any]) -> Profile:
         safe_id = sanitize_profile_id(profile_id)
-        with self._lock:
-            profiles = self._read_profiles()
-            target = next((p for p in profiles if p.id == safe_id), None)
+        with self._locked():
+            entries = self._read_entries()
+            target = self._find(entries, safe_id)
             if target is None:
                 raise KeyError(f"Profile '{safe_id}' not found")
 
@@ -232,7 +289,13 @@ class ProfileStore:
                 target.name = new_name
             if "proxy" in updates:
                 raw_proxy = str(updates["proxy"] or "").strip()
-                target.proxy = ProxyConfig.from_url(raw_proxy).raw_url if raw_proxy else ""
+                new_proxy = ProxyConfig.from_url(raw_proxy).raw_url if raw_proxy else ""
+                if new_proxy != target.proxy:
+                    # A cached exit IP belongs to the old proxy; never geo-match against it.
+                    target.proxy_exit_ip = ""
+                target.proxy = new_proxy
+            if "proxy_exit_ip" in updates:
+                target.proxy_exit_ip = normalize_ip(updates["proxy_exit_ip"]) if target.proxy else ""
             if "timezone" in updates:
                 target.timezone = str(updates["timezone"] or "America/New_York").strip()
             if "locale" in updates:
@@ -253,40 +316,40 @@ class ProfileStore:
                     _, summary = generate_and_save_fingerprint(self.profile_dir(safe_id), new_os)
                     target.fingerprint_summary = summary_dict(summary)
 
-            self._write_profiles(profiles)
+            self._write_entries(entries)
             return target
 
     def regenerate_fingerprint(self, profile_id: str) -> Profile:
         safe_id = sanitize_profile_id(profile_id)
-        with self._lock:
-            profiles = self._read_profiles()
-            target = next((p for p in profiles if p.id == safe_id), None)
+        with self._locked():
+            entries = self._read_entries()
+            target = self._find(entries, safe_id)
             if target is None:
                 raise KeyError(f"Profile '{safe_id}' not found")
             pdir = self.profile_dir(safe_id)
             pdir.mkdir(parents=True, exist_ok=True)
             _, summary = generate_and_save_fingerprint(pdir, target.os)
             target.fingerprint_summary = summary_dict(summary)
-            self._write_profiles(profiles)
+            self._write_entries(entries)
             return target
 
     def mark_used(self, profile_id: str) -> None:
         safe_id = sanitize_profile_id(profile_id)
-        with self._lock:
-            profiles = self._read_profiles()
-            target = next((p for p in profiles if p.id == safe_id), None)
+        with self._locked():
+            entries = self._read_entries()
+            target = self._find(entries, safe_id)
             if target is not None:
                 target.last_used_at = time.strftime("%Y-%m-%d %H:%M")
-                self._write_profiles(profiles)
+                self._write_entries(entries)
 
     def delete_profile(self, profile_id: str, wipe_data: bool = True) -> bool:
         safe_id = sanitize_profile_id(profile_id)
-        with self._lock:
-            profiles = self._read_profiles()
-            remaining = [p for p in profiles if p.id != safe_id]
-            if len(remaining) == len(profiles):
+        with self._locked():
+            entries = self._read_entries()
+            remaining = [e for e in entries if not (isinstance(e, Profile) and e.id == safe_id)]
+            if len(remaining) == len(entries):
                 return False
-            self._write_profiles(remaining)
+            self._write_entries(remaining)
 
         if wipe_data:
             pdir = self.profile_dir(safe_id)

@@ -1,12 +1,20 @@
 """Unit tests for ProfileStore, atomic persistence, and legacy migration."""
 
 import json
+import multiprocessing
 from pathlib import Path
 import tempfile
 import unittest
 
-from camoudesk.core.storage import ProfileStore
+from camoudesk.core.storage import ProfileStore, RegistryCorruptError
 from camoudesk.models.profile import sanitize_profile_id
+
+
+def _create_many(app_dir: str, legacy_dir: str, worker: int, count: int) -> None:
+    store = ProfileStore(app_dir=Path(app_dir), legacy_dir=Path(legacy_dir))
+    for i in range(count):
+        prof = store.create_profile({"name": f"w{worker}-{i}"})
+        store.mark_used(prof.id)
 
 
 class TestProfileStore(unittest.TestCase):
@@ -72,6 +80,62 @@ class TestProfileStore(unittest.TestCase):
         self.assertTrue(store.delete_profile(created.id, wipe_data=True))
         self.assertFalse(pdir.exists())
         self.assertIsNone(store.get_profile(created.id))
+
+    def test_corrupt_registry_is_never_overwritten(self) -> None:
+        store = ProfileStore(app_dir=self.app_dir, legacy_dir=self.legacy_dir)
+        store.registry_path.write_text("[{truncated", encoding="utf-8")
+
+        with self.assertRaises(RegistryCorruptError):
+            store.create_profile({"name": "Would clobber"})
+        with self.assertRaises(RegistryCorruptError):
+            store.list_profiles()
+
+        self.assertEqual(store.registry_path.read_text(encoding="utf-8"), "[{truncated")
+        backups = list(store.registry_path.parent.glob("registry.corrupt-*.json"))
+        self.assertEqual(len(backups), 1)
+        # Re-opening the store must not reseed over the corrupt file either.
+        ProfileStore(app_dir=self.app_dir, legacy_dir=self.legacy_dir)
+        self.assertEqual(store.registry_path.read_text(encoding="utf-8"), "[{truncated")
+
+    def test_invalid_entry_survives_unrelated_writes(self) -> None:
+        store = ProfileStore(app_dir=self.app_dir, legacy_dir=self.legacy_dir)
+        good = store.create_profile({"name": "Good"})
+        raw = json.loads(store.registry_path.read_text(encoding="utf-8"))
+        bad_entry = {"id": "hand_edited", "name": "Bad proxy", "proxy": "http://hostonly", "future_field": 1}
+        raw.append(bad_entry)
+        store.registry_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        self.assertNotIn("hand_edited", [p.id for p in store.list_profiles()])
+        store.mark_used(good.id)
+        store.create_profile({"name": "Another"})
+
+        persisted = json.loads(store.registry_path.read_text(encoding="utf-8"))
+        self.assertIn(bad_entry, persisted)
+
+    def test_proxy_exit_ip_cleared_when_proxy_changes(self) -> None:
+        store = ProfileStore(app_dir=self.app_dir, legacy_dir=self.legacy_dir)
+        prof = store.create_profile({"name": "Geo", "proxy": "socks5://10.0.0.1:1080", "proxy_exit_ip": "203.0.113.7"})
+        self.assertEqual(prof.proxy_exit_ip, "203.0.113.7")
+        self.assertEqual(store.update_profile(prof.id, {"name": "Geo2"}).proxy_exit_ip, "203.0.113.7")
+        self.assertEqual(store.update_profile(prof.id, {"proxy": "socks5://10.0.0.2:1080"}).proxy_exit_ip, "")
+        self.assertEqual(store.update_profile(prof.id, {"proxy_exit_ip": "not-an-ip"}).proxy_exit_ip, "")
+
+    def test_concurrent_processes_do_not_lose_writes(self) -> None:
+        ProfileStore(app_dir=self.app_dir, legacy_dir=self.legacy_dir)
+        ctx = multiprocessing.get_context("spawn")
+        workers, per_worker = 4, 6
+        procs = [
+            ctx.Process(target=_create_many, args=(str(self.app_dir), str(self.legacy_dir), w, per_worker))
+            for w in range(workers)
+        ]
+        for p in procs:
+            p.start()
+        for p in procs:
+            p.join(120)
+            self.assertEqual(p.exitcode, 0)
+
+        names = [p.name for p in ProfileStore(app_dir=self.app_dir, legacy_dir=self.legacy_dir).list_profiles()]
+        self.assertEqual(len(names), 1 + workers * per_worker)
 
     def test_path_traversal_rejected(self) -> None:
         for bad in ("../etc", "foo/bar", "", "a b", ".hidden"):

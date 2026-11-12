@@ -4,53 +4,15 @@ import argparse
 import signal
 import sys
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from camoufox.sync_api import Camoufox
 
 from camoudesk.core.fingerprint import ensure_profile_fingerprint
+from camoudesk.core.launcher import build_camoufox_kwargs, resolve_geoip
 from camoudesk.core.storage import ProfileStore
-from camoudesk.models.profile import ProxyConfig
 
-
-def build_camoufox_kwargs(
-    profile_os: str,
-    user_data_dir: str,
-    saved_fingerprint: Dict[str, Any],
-    proxy_url: str = "",
-    timezone: str = "",
-    locale: str = "en-US",
-    block_webrtc: bool = True,
-    humanize: bool = True,
-    canvas_noise: bool = True,
-    headless: bool = False,
-) -> Dict[str, Any]:
-    """Build verified keyword arguments for Camoufox(persistent_context=True, ...)."""
-    config: Dict[str, Any] = {}
-    if timezone:
-        config["timezone"] = timezone
-
-    kwargs: Dict[str, Any] = {
-        "persistent_context": True,
-        "user_data_dir": user_data_dir,
-        "fingerprint": saved_fingerprint,
-        "i_know_what_im_doing": True,
-        "os": profile_os,
-        "locale": locale or "en-US",
-        "block_webrtc": block_webrtc,
-        "humanize": humanize,
-        # Avoid Camoufox nested host_gpu() subprocess probe which can deadlock Juggler pipes on macOS.
-        "canvas_noise": canvas_noise,
-        "headless": headless,
-    }
-    if config:
-        kwargs["config"] = config
-
-    proxy_cfg = ProxyConfig.from_url(proxy_url).to_playwright_proxy() if proxy_url else None
-    if proxy_cfg:
-        kwargs["proxy"] = proxy_cfg
-
-    return kwargs
+__all__ = ["build_camoufox_kwargs", "run_worker", "main"]
 
 
 def run_worker(
@@ -93,6 +55,7 @@ def run_worker(
         block_webrtc=profile.block_webrtc,
         humanize=profile.humanize,
         headless=headless,
+        geoip=resolve_geoip(profile),
     )
 
     print(

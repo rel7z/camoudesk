@@ -8,29 +8,34 @@
 #include <string.h>
 #include <unistd.h>
 
+/*
+ * Runtime resolution order:
+ *   1. Contents/Resources/python  -- relocatable CPython bundled by build_app.sh (default build)
+ *   2. CAMOUDESK_VENV_PYTHON      -- the build machine's interpreter (`build_app.sh --dev` only)
+ */
 #ifndef CAMOUDESK_VENV_PYTHON
-#define CAMOUDESK_VENV_PYTHON "/usr/bin/python3"
+#define CAMOUDESK_VENV_PYTHON ""
 #endif
 
 #ifndef CAMOUDESK_SRC_DIR
 #define CAMOUDESK_SRC_DIR ""
 #endif
 
-static void resolve_resources_src(char *out, size_t out_sz) {
+static int resolve_contents_dir(char *out, size_t out_sz) {
     char exe_buf[PATH_MAX];
     uint32_t size = sizeof(exe_buf);
-    if (_NSGetExecutablePath(exe_buf, &size) == 0) {
-        char real_exe[PATH_MAX];
-        if (realpath(exe_buf, real_exe) != NULL) {
-            char *macos_dir = dirname(real_exe);       /* .../Contents/MacOS */
-            char *contents_dir = dirname(macos_dir);   /* .../Contents */
-            snprintf(out, out_sz, "%s/Resources/src", contents_dir);
-            if (access(out, F_OK) == 0) {
-                return;
-            }
-        }
+    char real_exe[PATH_MAX];
+    if (_NSGetExecutablePath(exe_buf, &size) != 0 || realpath(exe_buf, real_exe) == NULL) {
+        return 0;
     }
-    snprintf(out, out_sz, "%s", CAMOUDESK_SRC_DIR);
+    char *macos_dir = dirname(real_exe);     /* .../Contents/MacOS */
+    char *contents_dir = dirname(macos_dir); /* .../Contents */
+    snprintf(out, out_sz, "%s", contents_dir);
+    return 1;
+}
+
+static void fail(const char *msg) {
+    fprintf(stderr, "CamouDesk: %s\n", msg);
 }
 
 int main(int argc, char **argv) {
@@ -40,22 +45,46 @@ int main(int argc, char **argv) {
     setenv("PYTHONUTF8", "1", 1);
     setenv("PYWEBVIEW_GUI", "cocoa", 1);
 
-    char resources_src[PATH_MAX];
-    resolve_resources_src(resources_src, sizeof(resources_src));
+    char contents[PATH_MAX] = "";
+    char bundled_home[PATH_MAX] = "";
+    char bundled_python[PATH_MAX] = "";
+    char resources_src[PATH_MAX] = "";
+    if (resolve_contents_dir(contents, sizeof(contents))) {
+        snprintf(bundled_home, sizeof(bundled_home), "%s/Resources/python", contents);
+        snprintf(bundled_python, sizeof(bundled_python), "%s/bin/python3", bundled_home);
+        snprintf(resources_src, sizeof(resources_src), "%s/Resources/src", contents);
+        if (access(resources_src, F_OK) != 0) {
+            resources_src[0] = '\0';
+        }
+    }
+    int use_bundled = bundled_python[0] != '\0' && access(bundled_python, X_OK) == 0;
+    if (!use_bundled && CAMOUDESK_SRC_DIR[0] != '\0' && resources_src[0] == '\0') {
+        snprintf(resources_src, sizeof(resources_src), "%s", CAMOUDESK_SRC_DIR);
+    }
+
+    const char *program = use_bundled ? bundled_python : CAMOUDESK_VENV_PYTHON;
+    if (program[0] == '\0') {
+        fail("no Python runtime found in Contents/Resources/python; rebuild with macos/build_app.sh");
+        return 1;
+    }
 
     PyConfig config;
-    PyConfig_InitPythonConfig(&config);
-    PyStatus status = PyConfig_SetBytesString(&config, &config.program_name, CAMOUDESK_VENV_PYTHON);
+    /* Isolated: ignore PYTHONPATH/PYTHONHOME and user site-packages from the launching environment. */
+    PyConfig_InitIsolatedConfig(&config);
+    PyStatus status = PyConfig_SetBytesString(&config, &config.program_name, program);
+    if (!PyStatus_Exception(status) && use_bundled) {
+        status = PyConfig_SetBytesString(&config, &config.home, bundled_home);
+    }
     if (PyStatus_Exception(status)) {
         PyConfig_Clear(&config);
-        fprintf(stderr, "CamouDesk: failed to configure Python runtime\n");
+        fail("failed to configure Python runtime");
         return 1;
     }
 
     status = Py_InitializeFromConfig(&config);
     PyConfig_Clear(&config);
     if (PyStatus_Exception(status)) {
-        fprintf(stderr, "CamouDesk: failed to initialize Python runtime\n");
+        fail("failed to initialize Python runtime");
         return 1;
     }
 

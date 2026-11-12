@@ -13,7 +13,7 @@ fi
 STAGE_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGE_DIR"' EXIT
 
-cp -R "$APP_PATH" "$STAGE_DIR/CamouDesk.app"
+ditto "$APP_PATH" "$STAGE_DIR/CamouDesk.app"  # preserves mtimes of the pinned fpgen model
 ln -s /Applications "$STAGE_DIR/Applications"
 
 rm -f "$DMG_PATH"

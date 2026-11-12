@@ -14,6 +14,7 @@ def _serialize_profile_for_ui(profile: Profile, status_info: Dict[str, Any]) -> 
     data["status"] = status_info["status"]
     data["pid"] = status_info["pid"]
     data["last_error"] = status_info["last_error"]
+    data["mode"] = status_info.get("mode")
     data["proxy_masked"] = ProxyConfig.from_url(profile.proxy).masked_display() if profile.proxy else "Direct"
     return data
 
@@ -75,7 +76,9 @@ class DesktopBridgeApi:
 
     def delete_profile(self, profile_id: str) -> Dict[str, Any]:
         try:
-            self.manager.stop(profile_id)
+            stopped = self.manager.stop(profile_id)
+            if not stopped.get("exited", True):
+                return {"ok": False, "error": "The browser is still running; profile data was not deleted."}
             deleted = self.store.delete_profile(profile_id, wipe_data=True)
             if not deleted:
                 return {"ok": False, "error": "Profile not found"}
