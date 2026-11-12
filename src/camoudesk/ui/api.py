@@ -15,6 +15,7 @@ def _serialize_profile_for_ui(profile: Profile, status_info: Dict[str, Any]) -> 
     data["pid"] = status_info["pid"]
     data["last_error"] = status_info["last_error"]
     data["mode"] = status_info.get("mode")
+    data["warning"] = status_info.get("warning", "")
     data["proxy_masked"] = ProxyConfig.from_url(profile.proxy).masked_display() if profile.proxy else "Direct"
     return data
 
@@ -93,8 +94,15 @@ class DesktopBridgeApi:
             return {"ok": False, "error": str(exc)}
 
     def stop_profile(self, profile_id: str) -> Dict[str, Any]:
+        """Starts a graceful stop and returns at once; the UI is notified when it finishes."""
         try:
-            return self.manager.stop(profile_id)
+            return self.manager.stop_async(profile_id)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def get_diagnostics(self, profile_id: str) -> Dict[str, Any]:
+        try:
+            return {"ok": True, "data": self.manager.diagnostics(profile_id)}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 

@@ -83,6 +83,7 @@
         <div class="form-group">
           <label for="f-locale">Locale</label>
           <select id="f-locale" class="select">
+            <option value="auto">Auto (match network)</option>
             <option value="en-US">en-US (English US)</option>
             <option value="en-GB">en-GB (English UK)</option>
             <option value="id-ID">id-ID (Indonesia)</option>
@@ -92,9 +93,9 @@
         </div>
 
         <div class="form-group full">
-          <label for="f-proxy">Proxy (HTTP / HTTPS / SOCKS5 — Optional)</label>
+          <label for="f-proxy">Proxy (HTTP / HTTPS / SOCKS4 / SOCKS5 — Optional)</label>
           <div class="inline-row">
-            <input type="text" id="f-proxy" class="input" placeholder="http://user:pass@host:port or socks5://host:port" />
+            <input type="text" id="f-proxy" class="input" placeholder="http://user:pass@host:port, socks5://user:pass@host:port or socks4://host:port" />
             <button type="button" class="btn btn-ghost" onclick="runProxyTest()">⚡ Test</button>
           </div>
           <div id="proxy-status" class="proxy-status"></div>
@@ -103,6 +104,7 @@
         <div class="form-group">
           <label for="f-tz">Timezone</label>
           <select id="f-tz" class="select">
+            <option value="auto">Auto (match network)</option>
             <option value="Asia/Jakarta">Asia/Jakarta (WIB)</option>
             <option value="America/New_York">America/New_York (EST)</option>
             <option value="America/Los_Angeles">America/Los_Angeles (PST)</option>
@@ -156,7 +158,7 @@
       </div>
       <pre id="logs-content" class="log-pre"></pre>
       <div class="modal-foot">
-        <span></span>
+        <button type="button" class="btn btn-ghost" onclick="copyDiagnostics()">Copy diagnostics</button>
         <button type="button" class="btn btn-ghost" onclick="closeLogsModal()">Close</button>
       </div>
     </div>

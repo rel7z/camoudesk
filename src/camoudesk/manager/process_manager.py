@@ -17,6 +17,7 @@ forwarder on the same port, instead of launching a second instance onto the same
 
 from dataclasses import dataclass
 import json
+import re
 import os
 from pathlib import Path
 import signal
@@ -26,7 +27,7 @@ import threading
 import time
 from typing import IO, Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from camoudesk.core.launcher import build_launch_spec, has_proxy_credentials
+from camoudesk.core.launcher import build_launch_spec, has_proxy_credentials, minimal_env
 from camoudesk.core.proxy_forwarder import ProxyForwarder
 from camoudesk.core.storage import ProfileStore, RegistryCorruptError
 from camoudesk.models.profile import Profile, ProxyConfig, sanitize_profile_id
@@ -37,8 +38,12 @@ _MODES = (MODE_DIRECT, MODE_WORKER)
 
 
 def _build_worker_env() -> Dict[str, str]:
-    """Ensure child worker inherits current environment and can import camoudesk."""
-    env = dict(os.environ)
+    """Minimal environment for the worker (and the browser it starts) that can import camoudesk.
+
+    Secrets in the GUI's environment never reach workers or browsers; only the allowlist,
+    CamouDesk's own settings and Python's search path are passed on.
+    """
+    env = minimal_env(extra_prefixes=("CAMOUDESK_", "PYTHONPATH", "PYTHONUTF8"))
     src_root = str(Path(__file__).resolve().parents[2])
     existing = env.get("PYTHONPATH", "")
     parts = [p for p in existing.split(os.pathsep) if p]
@@ -135,8 +140,47 @@ class ProcessManager:
         self._lock = threading.Lock()
         self._runs: Dict[str, _Run] = {}
         self._last_errors: Dict[str, str] = {}
+        self._warnings: Dict[str, str] = {}
+        self._transitions: Dict[str, str] = {}  # profile_id -> "starting" | "stopping"
+        self._listeners: List[Callable[[], None]] = []
+        self._dirty = False
+        self._monitor: Optional[threading.Thread] = None
+        self._monitor_stop = threading.Event()
         if adopt_running:
             self._adopt_running()
+
+    # ------------------------------------------------------------------ change notification
+
+    def add_listener(self, callback: Callable[[], None]) -> None:
+        """Register a callback fired (from a background thread) whenever any profile's status changes."""
+        self._listeners.append(callback)
+
+    def _notify(self) -> None:
+        self._dirty = False
+        for cb in list(self._listeners):
+            try:
+                cb()
+            except Exception:
+                pass
+
+    def start_monitor(self, interval: float = 0.5) -> None:
+        """Poll for browsers that exit on their own (user quit, crash) and notify listeners."""
+        if self._monitor is not None and self._monitor.is_alive():
+            return
+        self._monitor_stop.clear()
+
+        def loop() -> None:
+            while not self._monitor_stop.wait(interval):
+                with self._lock:
+                    self._reap_finished_locked()
+                if self._dirty:
+                    self._notify()
+
+        self._monitor = threading.Thread(target=loop, name="camoudesk-process-monitor", daemon=True)
+        self._monitor.start()
+
+    def stop_monitor(self) -> None:
+        self._monitor_stop.set()
 
     # ------------------------------------------------------------------ bookkeeping
 
@@ -161,6 +205,8 @@ class ProcessManager:
         log_path = self.store.log_file(profile_id)
 
         def write(message: str) -> None:
+            self._warnings[profile_id] = message
+            self._dirty = True
             try:
                 with open(log_path, "a", encoding="utf-8") as fh:
                     fh.write(f"[PROXY] {message}\n")
@@ -168,6 +214,20 @@ class ProcessManager:
                 pass
 
         return write
+
+    def _failure_summary(self, profile_id: str, code: Optional[int]) -> str:
+        """Human-readable reason for an unexpected exit, from CamouDesk's own log lines only.
+
+        Firefox writes a lot of harmless noise to stderr (``Error in cpuinfo``, JS warnings), so
+        the raw log tail is useless as an error message.
+        """
+        lines = self.read_logs(profile_id, max_lines=400).splitlines()
+        tagged = [ln for ln in lines if ln.startswith(("[ERROR]", "[PROXY]"))]
+        if not tagged:
+            # A worker traceback ends with "SomeError: message".
+            tagged = [ln for ln in lines if re.match(r"^[A-Za-z_][\w.]*(Error|Exception): ", ln)]
+        status = f"Browser exited with status {code}" if code is not None else "Browser exited unexpectedly"
+        return (tagged[-1].strip() if tagged else status)[:300]
 
     def _start_forwarder(self, profile: Profile, port: int = 0) -> ProxyForwarder:
         forwarder = ProxyForwarder(ProxyConfig.from_url(profile.proxy), port=port, on_error=self._proxy_logger(profile.id))
@@ -229,10 +289,11 @@ class ProcessManager:
                 continue
             self._runs.pop(profile_id, None)
             self._finish_locked(profile_id, run)
+            self._warnings.pop(profile_id, None)
+            self._dirty = True
             code = run.exit_code()
             if code not in (None, 0):
-                tail = self.read_logs(profile_id, max_lines=10)
-                self._last_errors[profile_id] = tail or f"Browser exited with status {code}"
+                self._last_errors[profile_id] = self._failure_summary(profile_id, code)
 
     # ------------------------------------------------------------------ queries
 
@@ -247,9 +308,22 @@ class ProcessManager:
         with self._lock:
             self._reap_finished_locked()
             run = self._runs.get(safe_id)
+            transition = self._transitions.get(safe_id)
             if run is not None:
-                return {"status": "running", "pid": run.pid, "mode": run.mode, "last_error": ""}
-            return {"status": "stopped", "pid": None, "mode": None, "last_error": self._last_errors.get(safe_id, "")}
+                return {
+                    "status": transition or "running",
+                    "pid": run.pid,
+                    "mode": run.mode,
+                    "last_error": "",
+                    "warning": self._warnings.get(safe_id, ""),
+                }
+            return {
+                "status": transition or "stopped",
+                "pid": None,
+                "mode": None,
+                "last_error": "" if transition else self._last_errors.get(safe_id, ""),
+                "warning": "",
+            }
 
     def default_mode(self, profile: Profile, headless: bool) -> str:
         # Headless runs are automation-shaped; interactive ones launch the browser directly.
@@ -294,6 +368,95 @@ class ProcessManager:
         mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         safe_id = sanitize_profile_id(profile_id)
+        with self._lock:
+            self._reap_finished_locked()
+            current = self._transitions.get(safe_id)
+            if current is None and safe_id in self._runs:
+                run = self._runs[safe_id]
+                return {"ok": True, "pid": run.pid, "mode": run.mode, "already_running": True}
+            if current == "stopping":
+                return {"ok": False, "error": "This profile is still shutting down; try again in a moment."}
+            if current == "starting":
+                return {"ok": True, "pid": None, "mode": None, "already_running": True}
+            self._transitions[safe_id] = "starting"
+            self._warnings.pop(safe_id, None)
+        self._notify()
+        try:
+            return self._launch_impl(safe_id, headless, url_override, mode)
+        finally:
+            with self._lock:
+                self._transitions.pop(safe_id, None)
+            self._notify()
+
+    def stop_async(self, profile_id: str, timeout: float = 10.0) -> Dict[str, Any]:
+        """Begin a graceful stop in the background; listeners are notified when it completes."""
+        safe_id = sanitize_profile_id(profile_id)
+        with self._lock:
+            self._reap_finished_locked()
+            if safe_id not in self._runs:
+                return {"ok": True, "was_running": False, "stopping": False}
+            if self._transitions.get(safe_id) == "stopping":
+                return {"ok": True, "was_running": True, "stopping": True}
+            self._transitions[safe_id] = "stopping"
+        self._notify()
+
+        def run() -> None:
+            try:
+                result = self.stop(safe_id, timeout=timeout)
+                if not result.get("exited", True):
+                    with self._lock:
+                        self._last_errors[safe_id] = "The browser did not exit after stop."
+            finally:
+                with self._lock:
+                    self._transitions.pop(safe_id, None)
+                self._notify()
+
+        threading.Thread(target=run, name=f"camoudesk-stop-{safe_id}", daemon=True).start()
+        return {"ok": True, "was_running": True, "stopping": True}
+
+    def diagnostics(self, profile_id: str) -> str:
+        """Masked, copyable launch summary for bug reports (never contains proxy credentials)."""
+        from camoudesk import __version__
+
+        safe_id = sanitize_profile_id(profile_id)
+        profile = self.store.get_profile(safe_id)
+        status = self.get_status(safe_id)
+        lines = [f"CamouDesk {__version__}", f"profile: {safe_id}"]
+        if profile is None:
+            lines.append("profile not found")
+        else:
+            proxy = ProxyConfig.from_url(profile.proxy) if profile.proxy else ProxyConfig()
+            with self._lock:
+                run = self._runs.get(safe_id)
+            local = None
+            if proxy.has_credentials and run is not None and run.forward_port:
+                local = ProxyConfig(scheme="socks5" if proxy.scheme.startswith("socks") else "http",
+                                    host="127.0.0.1", port=run.forward_port)
+            effective = (local or (proxy if not proxy.has_credentials else ProxyConfig())).to_firefox_prefs()
+            lines += [
+                f"os: {profile.os}  timezone: {profile.timezone}  locale: {profile.locale}",
+                f"status: {status['status']}  mode: {status.get('mode')}  pid: {status.get('pid')}",
+                f"proxy: {proxy.masked_display()}  type: {proxy.scheme or 'none'}  "
+                f"credentials: {'yes' if proxy.has_credentials else 'no'}",
+                f"forwarder port: {run.forward_port if run is not None and run.forward_port else '-'}",
+                f"exit ip cached: {'yes' if profile.proxy_exit_ip else 'no'}",
+                f"start urls: {profile.startup_url}",
+                "effective proxy prefs: " + (json.dumps(effective, sort_keys=True) if effective else "none (system/direct)"),
+                f"last error: {status.get('last_error') or '-'}",
+                f"warning: {status.get('warning') or '-'}",
+            ]
+        log = self.read_logs(safe_id, max_lines=60)
+        log = re.sub(r"://([^:@/\s]+):([^@/\s]+)@", r"://\1:***@", log)
+        lines += ["--- log tail ---", log]
+        return "\n".join(lines)
+
+    def _launch_impl(
+        self,
+        safe_id: str,
+        headless: bool,
+        url_override: Optional[str],
+        mode: Optional[str],
+    ) -> Dict[str, Any]:
         profile = self.store.get_profile(safe_id)
         if profile is None:
             return {"ok": False, "error": f"Profile '{safe_id}' does not exist"}

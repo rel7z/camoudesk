@@ -2,11 +2,13 @@
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import pytest
 
@@ -51,6 +53,39 @@ class TestProxyPrefs(unittest.TestCase):
         self.assertFalse(has_proxy_credentials(Profile(id="b", name="b", proxy="http://10.0.0.5:1")))
         self.assertFalse(has_proxy_credentials(Profile(id="c", name="c")))
         self.assertEqual(ProxyConfig().to_firefox_prefs(), {})
+
+
+class TestEnvAndDefaults(unittest.TestCase):
+    def test_browser_env_keeps_camoufox_vars_and_drops_secrets(self) -> None:
+        from camoudesk.core.launcher import _browser_env
+
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-secret", "HOME": "/Users/t", "HTTPS_PROXY": "http://127.0.0.1:9"}):
+            launch_env = {**os.environ, "CAMOU_CONFIG_1": "{}", "CAMOU_PREFS_1": "{}"}
+            env = _browser_env(launch_env)
+        self.assertEqual((env["CAMOU_CONFIG_1"], env["CAMOU_PREFS_1"], env["HOME"]), ("{}", "{}", "/Users/t"))
+        self.assertNotIn("OPENROUTER_API_KEY", env)
+        self.assertNotIn("HTTPS_PROXY", env)
+
+    def test_auto_timezone_and_locale_are_not_spoofed(self) -> None:
+        kw = build_camoufox_kwargs("macos", "/tmp/ff", {}, timezone="auto", locale="auto")
+        self.assertNotIn("config", kw)
+        self.assertNotIn("locale", kw)
+        kw = build_camoufox_kwargs("macos", "/tmp/ff", {}, timezone="Europe/Berlin", locale="de-DE")
+        self.assertEqual((kw["config"], kw["locale"]), ({"timezone": "Europe/Berlin"}, "de-DE"))
+
+    def test_socks4(self) -> None:
+        cfg = ProxyConfig.from_url("socks4://10.0.0.5:1080")
+        self.assertEqual(cfg.to_firefox_prefs()["network.proxy.socks_version"], 4)
+        with self.assertRaises(ValueError):
+            ProxyConfig.from_url("socks4://u:p@10.0.0.5:1080")
+
+    def test_new_profiles_default_to_auto(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ProfileStore(app_dir=Path(tmp) / "app", legacy_dir=Path(tmp) / "legacy")
+            starter = store.list_profiles()[0]
+            self.assertEqual((starter.name, starter.timezone, starter.locale), ("Profile 1", "auto", "auto"))
+            created = store.create_profile({"name": "New"})
+            self.assertEqual((created.timezone, created.locale), ("auto", "auto"))
 
 
 class TestModeSelection(unittest.TestCase):

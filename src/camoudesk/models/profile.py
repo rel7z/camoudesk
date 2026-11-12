@@ -10,7 +10,7 @@ from urllib.parse import urlsplit, urlunsplit
 from camoudesk.config import DEFAULT_STARTUP_URL, SUPPORTED_OS
 
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
-_ALLOWED_PROXY_SCHEMES = ("http", "https", "socks5", "socks5h")
+_ALLOWED_PROXY_SCHEMES = ("http", "https", "socks4", "socks5", "socks5h")
 
 
 def sanitize_profile_id(profile_id: str) -> str:
@@ -60,9 +60,12 @@ class ProxyConfig:
         parsed = urlsplit(cleaned)
         scheme = parsed.scheme.lower()
         if scheme not in _ALLOWED_PROXY_SCHEMES:
-            raise ValueError(f"Unsupported proxy scheme '{scheme}'. Use http, https, or socks5.")
+            raise ValueError(f"Unsupported proxy scheme '{scheme}'. Use http, https, socks4, or socks5.")
         if not parsed.hostname or parsed.port is None:
             raise ValueError("Proxy URL must include both host and port (e.g. http://host:port)")
+
+        if scheme == "socks4" and (parsed.username or parsed.password):
+            raise ValueError("SOCKS4 proxies cannot use a username/password; use SOCKS5 instead.")
 
         canonical = urlunsplit((scheme, parsed.netloc, "", "", ""))
         return cls(
@@ -97,14 +100,14 @@ class ProxyConfig:
             "network.proxy.failover_direct": False,
             "network.proxy.no_proxies_on": "",
         }
-        if self.scheme in ("socks5", "socks5h"):
+        if self.scheme in ("socks4", "socks5", "socks5h"):
             prefs.update(
                 {
                     "network.proxy.type": 1,
                     "network.proxy.socks": self.host,
                     "network.proxy.socks_port": int(self.port or 0),
-                    "network.proxy.socks_version": 5,
-                    # Resolve DNS through the proxy for both socks5 and socks5h to avoid DNS leaks.
+                    "network.proxy.socks_version": 4 if self.scheme == "socks4" else 5,
+                    # Resolve DNS through the proxy (SOCKS4a / SOCKS5h) to avoid DNS leaks.
                     "network.proxy.socks_remote_dns": True,
                 }
             )
@@ -196,8 +199,8 @@ class Profile:
     os: str = "macos"
     proxy: str = ""
     proxy_exit_ip: str = ""
-    timezone: str = "America/New_York"
-    locale: str = "en-US"
+    timezone: str = "auto"
+    locale: str = "auto"
     startup_url: str = DEFAULT_STARTUP_URL
     block_webrtc: bool = True
     humanize: bool = True
@@ -224,8 +227,8 @@ class Profile:
             os=os_target,
             proxy=proxy_raw,
             proxy_exit_ip=normalize_ip(raw.get("proxy_exit_ip")) if proxy_raw else "",
-            timezone=str(raw.get("timezone") or "America/New_York").strip(),
-            locale=str(raw.get("locale") or "en-US").strip(),
+            timezone=str(raw.get("timezone") or "auto").strip(),
+            locale=str(raw.get("locale") or "auto").strip(),
             startup_url=str(raw.get("startup_url") or raw.get("target_url") or DEFAULT_STARTUP_URL).strip(),
             block_webrtc=bool(raw.get("block_webrtc", True)),
             humanize=bool(raw.get("humanize", True)),

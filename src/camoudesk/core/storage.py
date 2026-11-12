@@ -85,10 +85,10 @@ class ProfileStore:
             else:
                 starter = self._build_new_profile(
                     profile_id="prof_default_1",
-                    name="Akun 1 (macOS Direct)",
+                    name="Profile 1",
                     os_target="macos",
-                    timezone="Asia/Jakarta",
-                    locale="id-ID",
+                    timezone="auto",
+                    locale="auto",
                     startup_url=DEFAULT_STARTUP_URL,
                 )
                 self._write_entries([starter])
@@ -206,8 +206,8 @@ class ProfileStore:
         name: str,
         os_target: str = "macos",
         proxy: str = "",
-        timezone: str = "America/New_York",
-        locale: str = "en-US",
+        timezone: str = "auto",
+        locale: str = "auto",
         startup_url: str = DEFAULT_STARTUP_URL,
         block_webrtc: bool = True,
         humanize: bool = True,
@@ -230,8 +230,8 @@ class ProfileStore:
             os=norm_os,
             proxy=norm_proxy,
             proxy_exit_ip=normalize_ip(proxy_exit_ip) if norm_proxy else "",
-            timezone=(timezone or "America/New_York").strip(),
-            locale=(locale or "en-US").strip(),
+            timezone=(timezone or "auto").strip(),
+            locale=(locale or "auto").strip(),
             startup_url=(startup_url or DEFAULT_STARTUP_URL).strip(),
             block_webrtc=bool(block_webrtc),
             humanize=bool(humanize),
@@ -259,8 +259,8 @@ class ProfileStore:
             name=name,
             os_target=str(data.get("os") or "macos"),
             proxy=str(data.get("proxy") or ""),
-            timezone=str(data.get("timezone") or "America/New_York"),
-            locale=str(data.get("locale") or "en-US"),
+            timezone=str(data.get("timezone") or "auto"),
+            locale=str(data.get("locale") or "auto"),
             startup_url=str(data.get("startup_url") or data.get("target_url") or DEFAULT_STARTUP_URL),
             block_webrtc=bool(data.get("block_webrtc", True)),
             humanize=bool(data.get("humanize", True)),
@@ -297,9 +297,9 @@ class ProfileStore:
             if "proxy_exit_ip" in updates:
                 target.proxy_exit_ip = normalize_ip(updates["proxy_exit_ip"]) if target.proxy else ""
             if "timezone" in updates:
-                target.timezone = str(updates["timezone"] or "America/New_York").strip()
+                target.timezone = str(updates["timezone"] or "auto").strip()
             if "locale" in updates:
-                target.locale = str(updates["locale"] or "en-US").strip()
+                target.locale = str(updates["locale"] or "auto").strip()
             if "startup_url" in updates or "target_url" in updates:
                 url_val = updates.get("startup_url") or updates.get("target_url") or DEFAULT_STARTUP_URL
                 target.startup_url = str(url_val).strip()

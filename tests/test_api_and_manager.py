@@ -83,7 +83,8 @@ class TestProcessManagerAndApi(unittest.TestCase):
         self.assertEqual((row["status"], row["pid"], row["mode"]), ("running", launched["pid"], MODE_DIRECT))
 
         stopped = self.api.stop_profile(pid)
-        self.assertTrue(stopped["ok"] and stopped["exited"])
+        self.assertTrue(stopped["ok"] and stopped["stopping"])  # returns at once; stop runs in background
+        self.assertTrue(self._wait_status(pid, "stopped"))
         self.assertFalse(_group_alive(launched["pid"]))
 
         edit_ok = self.api.update_profile(pid, {"name": "Renamed Cleanly"})
@@ -194,6 +195,90 @@ os._exit(0)
         elapsed = time.monotonic() - t0
         self.assertFalse(any(_group_alive(p) for p in pids))
         self.assertLess(elapsed, 6, "stop_all should not wait timeout x N sequentially")
+
+    def _wait_status(self, profile_id: str, status: str, timeout: float = 10.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.manager.get_status(profile_id)["status"] == status:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_stop_async_reports_stopping_and_notifies(self) -> None:
+        events: List[str] = []
+        prof_id = self.store.list_profiles()[0].id
+        self.manager.add_listener(lambda: events.append(self.manager.get_status(prof_id)["status"]))
+        self.manager.script = "trap '' TERM; sleep 30"  # takes the full escalation path
+        self.assertTrue(self.manager.launch(prof_id, mode=MODE_WORKER)["ok"])
+        self.assertIn("running", events)
+
+        res = self.manager.stop_async(prof_id, timeout=0.5)
+        self.assertTrue(res["stopping"])
+        self.assertEqual(self.manager.get_status(prof_id)["status"], "stopping")
+        refused = self.manager.launch(prof_id, mode=MODE_WORKER)
+        self.assertFalse(refused["ok"])
+        self.assertIn("shutting down", refused["error"])
+
+        self.assertTrue(self._wait_status(prof_id, "stopped"))
+        self.assertIn("stopping", events)
+        self.assertEqual(events[-1], "stopped")
+
+    def test_monitor_notices_browser_exiting_on_its_own(self) -> None:
+        fired = []
+        self.manager.add_listener(lambda: fired.append(time.monotonic()))
+        self.manager.script = "sleep 0.3"
+        prof_id = self.store.list_profiles()[0].id
+        self.manager.launch(prof_id, mode=MODE_WORKER)
+        fired.clear()
+        self.manager.start_monitor(interval=0.1)
+        try:
+            deadline = time.monotonic() + 5
+            while not fired and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(fired, "listener should fire when the browser exits by itself")
+            self.assertEqual(self.manager.get_status(prof_id)["status"], "stopped")
+        finally:
+            self.manager.stop_monitor()
+
+    def test_failure_summary_ignores_firefox_noise(self) -> None:
+        prof_id = self.store.list_profiles()[0].id
+        self.manager.script = (
+            'echo "Error in cpuinfo: sysctlbyname failed"; echo "JavaScript warning: noise"; exit 3'
+        )
+        self.manager.launch(prof_id, mode=MODE_WORKER)
+        self.assertTrue(self._wait_status(prof_id, "stopped"))
+        self.assertEqual(self.manager.get_status(prof_id)["last_error"], "Browser exited with status 3")
+
+        self.manager.script = 'echo "[ERROR] Camoufox launch failed: boom"; echo "Error in cpuinfo: x"; exit 1'
+        self.manager.launch(prof_id, mode=MODE_WORKER)
+        self.assertTrue(self._wait_status(prof_id, "stopped"))
+        self.assertEqual(self.manager.get_status(prof_id)["last_error"], "[ERROR] Camoufox launch failed: boom")
+
+    def test_diagnostics_are_masked(self) -> None:
+        origin = OriginServer()
+        upstream = FakeHttpProxy(origin.port, "u", "diag-secret")
+        try:
+            prof = self.store.create_profile({"name": "Diag", "proxy": f"http://u:diag-secret@127.0.0.1:{upstream.port}"})
+            self.manager.launch(prof.id)
+            text = self.api.get_diagnostics(prof.id)["data"]
+            self.assertNotIn("diag-secret", text)
+            self.assertIn("credentials: yes", text)
+            self.assertIn("network.proxy.http", text)  # the forwarder prefs Firefox actually uses
+            self.assertIn(f"forwarder port: {self.manager.local_proxies[-1].port}", text)
+        finally:
+            self.manager.stop_all(timeout=1.0)
+            upstream.close()
+            origin.close()
+
+    def test_worker_env_withholds_secrets(self) -> None:
+        from camoudesk.manager.process_manager import _build_worker_env
+
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-secret", "CAMOUDESK_HOME": "/tmp/x", "HOME": "/Users/t"}):
+            env = _build_worker_env()
+        self.assertNotIn("OPENROUTER_API_KEY", env)
+        self.assertEqual(env["CAMOUDESK_HOME"], "/tmp/x")
+        self.assertEqual(env["HOME"], "/Users/t")
+        self.assertIn("PYTHONPATH", env)
 
     def _port_open(self, port: int) -> bool:
         try:

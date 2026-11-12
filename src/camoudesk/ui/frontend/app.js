@@ -64,7 +64,7 @@ function renderProfiles() {
 
   let activeCount = 0;
   allProfiles.forEach((p) => {
-    if (p.status === "running") activeCount++;
+    if (p.status !== "stopped") activeCount++;
   });
   document.getElementById("stat-total").textContent = String(allProfiles.length);
   document.getElementById("stat-active").textContent = String(activeCount);
@@ -87,6 +87,7 @@ function renderProfiles() {
 
   filtered.forEach((p) => {
     const running = p.status === "running";
+    const busy = p.status === "starting" || p.status === "stopping";
     const fpChip = formatFingerprintChip(p);
     const subParts = [];
     if (p.last_used_at) subParts.push(`Last used ${p.last_used_at}`);
@@ -98,11 +99,12 @@ function renderProfiles() {
     tr.innerHTML = `
       <td>
         <div class="profile-cell">
-          <span class="dot ${running ? "dot-running" : "dot-stopped"}"></span>
+          <span class="dot ${running || busy ? "dot-running" : "dot-stopped"}"></span>
           <div>
             <div class="profile-title">${escapeHtml(p.name)}</div>
             <div class="profile-sub">${escapeHtml(subParts.join(" · "))}</div>
-            ${p.last_error ? `<div class="error-line">⚠️ ${escapeHtml(p.last_error.split("\n").slice(-1)[0])}</div>` : ""}
+            ${p.last_error ? `<div class="error-line">⚠️ ${escapeHtml(p.last_error)}</div>` : ""}
+            ${p.warning ? `<div class="error-line">⚠️ ${escapeHtml(p.warning)}</div>` : ""}
           </div>
         </div>
       </td>
@@ -120,7 +122,9 @@ function renderProfiles() {
       <td><span style="color: var(--text-secondary); font-size: 12px;">${escapeHtml(p.timezone)}</span></td>
       <td>
         <div class="actions">
-          ${running
+          ${busy
+            ? `<button class="btn btn-ghost" disabled>${p.status === "starting" ? "Starting…" : "Stopping…"}</button>`
+            : running
             ? `<button class="btn btn-stop" onclick="stopProfile('${escapeHtml(p.id)}')">⏹ Stop</button>`
             : `<button class="btn btn-start" onclick="launchProfile('${escapeHtml(p.id)}')">▶ Start</button>`
           }
@@ -157,9 +161,9 @@ function openCreateModal() {
   document.getElementById("edit-profile-id").value = "";
   document.getElementById("f-name").value = "";
   document.getElementById("f-os").value = "macos";
-  document.getElementById("f-locale").value = "en-US";
+  document.getElementById("f-locale").value = "auto";
   document.getElementById("f-proxy").value = "";
-  document.getElementById("f-tz").value = "Asia/Jakarta";
+  document.getElementById("f-tz").value = "auto";
   document.getElementById("f-url").value = "https://browserleaks.com/canvas";
   document.getElementById("f-notes").value = "";
   document.getElementById("f-webrtc").checked = true;
@@ -177,10 +181,11 @@ function openEditModal(id) {
   document.getElementById("edit-profile-id").value = prof.id;
   document.getElementById("f-name").value = prof.name;
   document.getElementById("f-os").value = prof.os || "macos";
-  document.getElementById("f-locale").value = prof.locale || "en-US";
+  ensureOption("f-locale", prof.locale || "auto");
+  document.getElementById("f-locale").value = prof.locale || "auto";
   document.getElementById("f-proxy").value = prof.proxy || "";
-  ensureTimezoneOption(prof.timezone || "America/New_York");
-  document.getElementById("f-tz").value = prof.timezone || "America/New_York";
+  ensureTimezoneOption(prof.timezone || "auto");
+  document.getElementById("f-tz").value = prof.timezone || "auto";
   document.getElementById("f-url").value = prof.startup_url || "https://browserleaks.com/canvas";
   document.getElementById("f-notes").value = prof.notes || "";
   document.getElementById("f-webrtc").checked = prof.block_webrtc !== false;
@@ -192,7 +197,11 @@ function openEditModal(id) {
 }
 
 function ensureTimezoneOption(tz) {
-  const select = document.getElementById("f-tz");
+  ensureOption("f-tz", tz);
+}
+
+function ensureOption(selectId, tz) {
+  const select = document.getElementById(selectId);
   const exists = Array.from(select.options).some((o) => o.value === tz);
   if (!exists && tz) {
     const opt = document.createElement("option");
@@ -278,6 +287,7 @@ async function runProxyTest() {
 }
 
 async function openLogsModal(id) {
+  logsProfileId = id;
   const prof = allProfiles.find((p) => p.id === id);
   document.getElementById("logs-title").textContent = `Logs — ${prof ? prof.name : id}`;
   const res = await window.pywebview.api.get_profile_logs(id);
@@ -327,5 +337,26 @@ window.addEventListener("pywebviewready", async () => {
     console.warn(err);
   }
   await refreshProfiles();
-  setInterval(refreshProfiles, 2000);
+  // The backend pushes status changes; this slow poll is only a safety net.
+  setInterval(refreshProfiles, 15000);
 });
+
+window.camoudesk = { onStatusChange: () => refreshProfiles() };
+
+let logsProfileId = null;
+async function copyDiagnostics() {
+  if (!logsProfileId) return;
+  const res = await window.pywebview.api.get_diagnostics(logsProfileId);
+  if (!res.ok) {
+    showToast(res.error || "Could not collect diagnostics", "error");
+    return;
+  }
+  const ta = document.createElement("textarea");
+  ta.value = res.data;
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  ta.remove();
+  document.getElementById("logs-content").textContent = res.data;
+  showToast("Diagnostics copied to clipboard", "success");
+}

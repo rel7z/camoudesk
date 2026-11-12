@@ -8,10 +8,55 @@ Playwright driver or long-lived Python worker is needed for interactive browsing
 
 from dataclasses import dataclass
 import ipaddress
-from typing import Any, Dict, List, Optional
+import os
+from typing import Any, Dict, List, Mapping, Optional
 
 from camoudesk.core.fingerprint import ensure_profile_fingerprint
 from camoudesk.models.profile import Profile, ProxyConfig
+
+
+# Timezone/locale value meaning "match the network": the proxy's exit location when one is
+# configured (resolved by the caller), otherwise the host's own settings (no spoofing).
+AUTO = "auto"
+
+# Host environment a browser actually needs. Everything else in the GUI's environment (API keys,
+# tokens, SSH agent sockets, proxy variables from a developer shell) is withheld from browsers.
+ENV_ALLOWLIST = (
+    "HOME",
+    "PATH",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "__CF_USER_TEXT_ENCODING",
+)
+
+
+def minimal_env(source: Optional[Mapping[str, str]] = None, extra_prefixes: tuple = ()) -> Dict[str, str]:
+    """The allowlisted subset of ``source`` (default: os.environ), plus keys with ``extra_prefixes``."""
+    src = os.environ if source is None else source
+    return {
+        k: str(v)
+        for k, v in src.items()
+        if k in ENV_ALLOWLIST or any(k.startswith(p) for p in extra_prefixes)
+    }
+
+
+def _browser_env(launch_env: Mapping[str, Any]) -> Dict[str, str]:
+    """Keep only what Camoufox added (CAMOU_CONFIG_*, CAMOU_PREFS_*, ...) plus the allowlist.
+
+    ``launch_options`` returns os.environ merged with its own variables; anything whose value
+    differs from the host environment was set by Camoufox and is required.
+    """
+    host = os.environ
+    env = minimal_env(host)
+    for k, v in launch_env.items():
+        if host.get(k) != str(v):
+            env[str(k)] = str(v)
+    return env
 
 
 @dataclass(frozen=True)
@@ -37,7 +82,7 @@ def build_camoufox_kwargs(
 ) -> Dict[str, Any]:
     """Build verified keyword arguments for Camoufox(persistent_context=True, ...)."""
     config: Dict[str, Any] = {}
-    if timezone:
+    if timezone and timezone != AUTO:
         config["timezone"] = timezone
 
     kwargs: Dict[str, Any] = {
@@ -46,13 +91,14 @@ def build_camoufox_kwargs(
         "fingerprint": saved_fingerprint,
         "i_know_what_im_doing": True,
         "os": profile_os,
-        "locale": locale or "en-US",
         "block_webrtc": block_webrtc,
         "humanize": humanize,
         # Avoid Camoufox nested host_gpu() subprocess probe which can deadlock Juggler pipes on macOS.
         "canvas_noise": canvas_noise,
         "headless": headless,
     }
+    if locale and locale != AUTO:
+        kwargs["locale"] = locale
     if config:
         kwargs["config"] = config
     if geoip:
@@ -145,5 +191,5 @@ def build_launch_spec(
     if target_url:
         args.append(target_url)
 
-    env = {str(k): str(v) for k, v in (opts.get("env") or {}).items()}
+    env = _browser_env(opts.get("env") or {})
     return LaunchSpec(executable=str(opts["executable_path"]), args=args, env=env, geoip=geoip)

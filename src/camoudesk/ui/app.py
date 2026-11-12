@@ -28,7 +28,18 @@ def main() -> None:
         text_select=True,
     )
 
+    def _push_status() -> None:
+        # Called from background threads whenever a browser starts, stops, exits or warns.
+        try:
+            window.evaluate_js("window.camoudesk && window.camoudesk.onStatusChange && window.camoudesk.onStatusChange()")
+        except Exception:
+            pass
+
+    manager.add_listener(_push_status)
+    manager.start_monitor()
+
     def _on_closing() -> None:
+        manager.stop_monitor()
         manager.stop_all()
 
     window.events.closing += _on_closing
