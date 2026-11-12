@@ -138,6 +138,11 @@ else
   rm -rf "$RESOURCES/python/lib/"{itcl*,tcl*,tk*,thread*,libtcl*} "$RESOURCES/python/share"
   rm -rf "$RESOURCES/python/lib/python$PY_VER/site-packages/"{PyObjCTest,pip,pip-*.dist-info}
   rm -f "$RESOURCES/python/bin/"{pip*,idle*,pydoc*}
+
+  # Precompile the whole runtime (stdlib + packages). Python otherwise writes missing .pyc files
+  # into the bundle on first import, breaking the code seal of an app in ~/Applications.
+  echo "[*] Precompiling the Python runtime"
+  "$BUNDLED_PY" -m compileall -q -j 0 "$RESOURCES/python/lib/python$PY_VER" >/dev/null || true
   ICON_PYTHON="$BUNDLED_PY"
 
   PY_INCLUDE="$RESOURCES/python/include/python$PY_VER"

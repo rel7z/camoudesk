@@ -367,7 +367,8 @@ class ProcessManager:
     ) -> Tuple[List[str], Dict[str, str], str]:
         """Return (argv, env, log header) for a launch. Overridden in tests."""
         if mode == MODE_WORKER:
-            cmd = [self.python_executable, "-m", "camoudesk.core.browser_worker", "--profile-id", profile.id]
+            # -B: never write .pyc files (inside the app bundle they would break its code seal).
+            cmd = [self.python_executable, "-B", "-m", "camoudesk.core.browser_worker", "--profile-id", profile.id]
             if headless:
                 cmd.append("--headless")
             if url_override:
@@ -487,7 +488,7 @@ class ProcessManager:
             self._end_busy(safe_id)
 
     def _cookie_import_command(self, safe_id: str, cookie_file: Path) -> List[str]:
-        return [self.python_executable, "-m", "camoudesk.core.browser_worker", "--profile-id", safe_id,
+        return [self.python_executable, "-B", "-m", "camoudesk.core.browser_worker", "--profile-id", safe_id,
                 "--import-cookies", str(cookie_file)]
 
     def clear_cookies(self, profile_id: str) -> None:

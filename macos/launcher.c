@@ -71,6 +71,12 @@ int main(int argc, char **argv) {
     PyConfig config;
     /* Isolated: ignore PYTHONPATH/PYTHONHOME and user site-packages from the launching environment. */
     PyConfig_InitIsolatedConfig(&config);
+    if (use_bundled) {
+        /* Never write .pyc files into the signed bundle (it would break the code seal). The build
+           precompiles everything; children inherit the variable and workers also run with -B. */
+        config.write_bytecode = 0;
+        setenv("PYTHONDONTWRITEBYTECODE", "1", 1);
+    }
     PyStatus status = PyConfig_SetBytesString(&config, &config.program_name, program);
     if (!PyStatus_Exception(status) && use_bundled) {
         status = PyConfig_SetBytesString(&config, &config.home, bundled_home);

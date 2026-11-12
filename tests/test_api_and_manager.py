@@ -116,6 +116,7 @@ class TestProcessManagerAndApi(unittest.TestCase):
             self.assertEqual(seen["stdin"], subprocess.DEVNULL)
             self.assertTrue(seen["start_new_session"])
             self.assertIn("camoudesk.core.browser_worker", seen["argv"])
+            self.assertEqual(seen["argv"][1], "-B")  # never write .pyc files into an app bundle
         finally:
             manager.stop_all(timeout=1.0)
 
