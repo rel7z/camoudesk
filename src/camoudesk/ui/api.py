@@ -204,7 +204,71 @@ class DesktopBridgeApi:
     @_bridge
     def profiles_list(self) -> List[Dict[str, Any]]:
         lookup = _ProxyLookup(self.proxies.list())
-        return [self._row(p, lookup) for p in self.store.list_profiles()]
+        return [self._row(p, lookup) for p in self.store.list_profiles() if not p.deleted_at]
+
+    @_bridge
+    def profiles_trash_list(self) -> List[Dict[str, Any]]:
+        lookup = _ProxyLookup(self.proxies.list())
+        return [self._row(p, lookup) for p in self.store.list_profiles() if p.deleted_at]
+
+    @_bridge
+    def profiles_trash(self, profile_ids: List[str]) -> Dict[str, Any]:
+        """Move profiles to the trash; their data stays on disk until purged. Running ones are stopped."""
+        moved = 0
+        for pid in profile_ids or []:
+            stopped = self.manager.stop(pid)
+            if not stopped.get("exited", True):
+                continue
+            self.store.set_trashed(pid, True)
+            moved += 1
+        return {"trashed": moved}
+
+    @_bridge
+    def profiles_restore(self, profile_ids: List[str]) -> Dict[str, Any]:
+        for pid in profile_ids or []:
+            self.store.set_trashed(pid, False)
+        return {"restored": len(profile_ids or [])}
+
+    @_bridge
+    def profiles_purge(self, profile_ids: List[str]) -> Dict[str, Any]:
+        """Delete forever (data wiped). Only profiles already in the trash can be purged."""
+        purged = 0
+        for pid in profile_ids or []:
+            prof = self.store.get_profile(pid)
+            if prof is None or not prof.deleted_at:
+                continue
+            if not self.manager.stop(pid).get("exited", True):
+                continue
+            if self.store.delete_profile(pid, wipe_data=True):
+                purged += 1
+        return {"purged": purged}
+
+    @_bridge
+    def profiles_empty_trash(self) -> Dict[str, Any]:
+        ids = [p.id for p in self.store.list_profiles() if p.deleted_at]
+        return self.profiles_purge(ids)["data"]
+
+    @_bridge
+    def profiles_clone(self, profile_id: str, copy_data: bool = False, name: str = "") -> Dict[str, Any]:
+        if copy_data and self.manager.is_running(profile_id):
+            raise ValueError("Stop the profile before duplicating its data.")
+        return self._row(self.store.clone_profile(profile_id, name=name, copy_data=bool(copy_data)))
+
+    @_bridge
+    def profiles_bulk_meta(self, profile_ids: List[str], patch: Dict[str, Any]) -> Dict[str, Any]:
+        """Folder/tag changes for many profiles: {folder?, add_tags?, remove_tags?}."""
+        patch = patch or {}
+        changed = self.store.bulk_update_metadata(
+            profile_ids or [],
+            folder=patch.get("folder") if "folder" in patch else None,
+            add_tags=patch.get("add_tags"),
+            remove_tags=patch.get("remove_tags"),
+        )
+        return {"changed": changed}
+
+    @_bridge
+    def folders_rename(self, old: str, new: str) -> Dict[str, Any]:
+        return {"changed": self.store.rename_folder(old, new)}
 
     @_bridge
     def profiles_get(self, profile_id: str) -> Dict[str, Any]:
@@ -292,7 +356,7 @@ class DesktopBridgeApi:
     def _proxy_usage(self) -> Dict[str, int]:
         usage: Dict[str, int] = {}
         for p in self.store.list_profiles():
-            if p.proxy_id:
+            if p.proxy_id and not p.deleted_at:
                 usage[p.proxy_id] = usage.get(p.proxy_id, 0) + 1
         return usage
 

@@ -438,3 +438,101 @@ class ProfileStore:
             if lfile.exists():
                 lfile.unlink(missing_ok=True)
         return True
+
+    # ------------------------------------------------------------------ trash, bulk, clone
+
+    def set_trashed(self, profile_id: str, trashed: bool) -> Profile:
+        """Move a profile to the trash (data kept) or restore it."""
+        safe_id = sanitize_profile_id(profile_id)
+        with self._locked():
+            entries = self._read_entries()
+            target = self._find(entries, safe_id)
+            if target is None:
+                raise KeyError(f"Profile '{safe_id}' not found")
+            target.deleted_at = time.strftime("%Y-%m-%d %H:%M") if trashed else None
+            self._write_entries(entries)
+            return target
+
+    def bulk_update_metadata(
+        self,
+        profile_ids: List[str],
+        folder: Optional[str] = None,
+        add_tags: Optional[List[str]] = None,
+        remove_tags: Optional[List[str]] = None,
+    ) -> int:
+        """Folder/tag changes for many profiles in one write. These never affect a running browser."""
+        ids = {sanitize_profile_id(i) for i in profile_ids}
+        add = clean_tags(add_tags or [])
+        remove = set(clean_tags(remove_tags or []))
+        changed = 0
+        with self._locked():
+            entries = self._read_entries()
+            for e in entries:
+                if isinstance(e, Profile) and e.id in ids:
+                    if folder is not None:
+                        e.folder = str(folder).strip()[:80]
+                    e.tags = clean_tags([t for t in e.tags if t not in remove] + add)
+                    changed += 1
+            self._write_entries(entries)
+        return changed
+
+    def rename_folder(self, old: str, new: str) -> int:
+        old_name, new_name = str(old or "").strip(), str(new or "").strip()[:80]
+        if not old_name:
+            raise ValueError("Choose a folder to rename")
+        changed = 0
+        with self._locked():
+            entries = self._read_entries()
+            for e in entries:
+                if isinstance(e, Profile) and e.folder == old_name:
+                    e.folder = new_name
+                    changed += 1
+            self._write_entries(entries)
+        return changed
+
+    _COPY_SKIP = {"cache2", "startupCache", "crashes", "minidumps", "saved-telemetry-pings", "datareporting",
+                  "lock", ".parentlock", "parent.lock", "storage.sqlite-journal"}
+
+    def clone_profile(self, profile_id: str, name: str = "", copy_data: bool = False) -> Profile:
+        """Clone a profile's settings. ``copy_data`` also copies its fingerprint, cookies and site
+        data (a duplicate the sites will see as the same device); otherwise a fresh fingerprint
+        is generated for the same OS and pinned screen size."""
+        src = self.get_profile(profile_id)
+        if src is None:
+            raise KeyError(f"Profile '{profile_id}' not found")
+        data = src.to_dict()
+        for key in ("id", "created_at", "last_used_at", "deleted_at", "fingerprint_summary", "startup_url"):
+            data.pop(key, None)
+        data["name"] = (name or "").strip() or f"{src.name} (copy)"
+        new_id = f"prof_{int(time.time())}_{os.urandom(2).hex()}"
+        if copy_data:
+            src_dir, dst_dir = self.profile_dir(src.id), self.profile_dir(new_id)
+            if dst_dir.exists():
+                raise RuntimeError("Target profile folder already exists")
+            shutil.copytree(src_dir, dst_dir, ignore=lambda _d, names: [n for n in names if n in self._COPY_SKIP or n == "run.json"])
+        profile = self._build_new_profile(
+            profile_id=new_id,
+            name=data["name"],
+            os_target=data["os"],
+            proxy=data.get("proxy") or "",
+            timezone=data.get("timezone") or "auto",
+            locale=data.get("locale") or "auto",
+            block_webrtc=data.get("block_webrtc", True),
+            humanize=data.get("humanize", True),
+            notes=data.get("notes") or "",
+            tags=data.get("tags") or [],
+            proxy_exit_ip=data.get("proxy_exit_ip") or "",
+            start_urls=data.get("start_urls") or None,
+            folder=data.get("folder") or "",
+            proxy_id=data.get("proxy_id") or "",
+            # A duplicate keeps the copied fingerprint.json: leave out the screen pin here, since a
+            # pin makes the builder generate (and overwrite) a fingerprint. Clones get a fresh one.
+            fp_overrides={k: v for k, v in (data.get("fp_overrides") or {}).items() if not (copy_data and k == "screen")},
+        )
+        profile.fp_overrides = clean_fp_overrides(data.get("fp_overrides") or {})
+        profile.proxy_timezone, profile.proxy_country = src.proxy_timezone, src.proxy_country
+        with self._locked():
+            entries = self._read_entries()
+            entries.insert(0, profile)
+            self._write_entries(entries)
+        return profile

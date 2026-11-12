@@ -2,9 +2,10 @@
 import { useLayoutEffect, useReducer } from "../vendor/preact-htm.module.js";
 
 let state = {
-  view: "profiles", // profiles | proxies | settings
+  view: "profiles", // profiles | trash | proxies | settings
   appInfo: null,
   profiles: [],
+  trash: [],
   proxies: [],
   settings: null,
   loaded: false,
@@ -49,6 +50,13 @@ export function toast(message, kind = "info", ms = 4200) {
 
 export function confirmDialog({ title, message, confirmLabel = "Confirm", danger = false }) {
   return new Promise((resolve) => setState({ dialog: { title, message, confirmLabel, danger, resolve } }));
+}
+
+// Resolves to the entered text, or null when cancelled.
+export function promptDialog({ title, message = "", label, initial = "", placeholder = "", confirmLabel = "Save", allowEmpty = false }) {
+  return new Promise((resolve) =>
+    setState({ dialog: { title, message, confirmLabel, input: { label, value: initial, placeholder, allowEmpty }, resolve } })
+  );
 }
 
 export function setPending(id, what) {

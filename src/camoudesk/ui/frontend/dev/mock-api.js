@@ -87,7 +87,21 @@ export function installMockApi() {
   window.pywebview = { api: {
     app_info: guard(() => ({ version: "0.2.0-dev", data_dir: "/Users/demo/Library/Application Support/CamouDesk",
       geoip: { available: true, installed: false, path: "/Users/demo/Library/Caches/camoufox/geoip/mmdb/geolite2-combined.mmdb" } })),
-    profiles_list: guard(() => profiles.map((p) => ({ ...p }))),
+    profiles_list: guard(() => profiles.filter((p) => !p.deleted_at).map((p) => ({ ...p }))),
+    profiles_trash_list: guard(() => profiles.filter((p) => p.deleted_at).map((p) => ({ ...p }))),
+    profiles_trash: guard((ids) => { ids.forEach((id) => Object.assign(find(id), { deleted_at: now(), status: "stopped" })); return { trashed: ids.length }; }),
+    profiles_restore: guard((ids) => { ids.forEach((id) => (find(id).deleted_at = null)); return { restored: ids.length }; }),
+    profiles_purge: guard((ids) => { ids.forEach((id) => profiles.splice(profiles.indexOf(find(id)), 1)); return { purged: ids.length }; }),
+    profiles_empty_trash: guard(() => { const t = profiles.filter((p) => p.deleted_at); t.forEach((p) => profiles.splice(profiles.indexOf(p), 1)); return { purged: t.length }; }),
+    profiles_clone: guard((id, copy) => { const src = find(id); const c = { ...src, id: `prof_${++seq}`, name: `${src.name} (copy)`, status: "stopped", pid: null, last_used_at: null, created_at: now() };
+      profiles.push(c); return { ...c }; }),
+    profiles_bulk_meta: guard((ids, patch) => {
+      ids.forEach((id) => { const p = find(id);
+        if ("folder" in patch) p.folder = patch.folder;
+        p.tags = [...new Set([...(p.tags || []).filter((t) => !(patch.remove_tags || []).includes(t)), ...(patch.add_tags || [])])]; });
+      return { changed: ids.length };
+    }),
+    folders_rename: guard((old, name) => { let n = 0; profiles.forEach((p) => p.folder === old && (p.folder = name, n++)); return { changed: n }; }),
     profiles_get: guard((id) => ({ ...find(id) })),
     profiles_create: guard((d) => {
       if (!d.name) throw new Error("Profile name is required");

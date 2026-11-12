@@ -74,3 +74,10 @@ export function sortProfiles(list, sort) {
   }[sort] || (() => 0);
   return [...list].sort(by);
 }
+
+// Stable colour per tag name (hue from a string hash), readable on both themes.
+export function tagStyle(tag) {
+  let h = 0;
+  for (const ch of tag) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return `--tag-h: ${h}`;
+}

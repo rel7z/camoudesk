@@ -1,9 +1,9 @@
 // Profiles page: toolbar, sortable/filterable table with selection, bulk bar.
 import { html, useMemo, useRef } from "../vendor/preact-htm.module.js";
 import { call } from "../lib/api.js";
-import { bulk, deleteProfiles, launchProfile, openDrawer, refreshProfiles, stopProfile } from "../lib/actions.js";
+import { addTagPrompt, bulk, bulkMeta, cloneProfile, deleteProfiles, launchProfile, moveToNewFolder, openDrawer, refreshProfiles, stopProfile } from "../lib/actions.js";
 import { setState, toast, useStore } from "../lib/store.js";
-import { OS_LABELS, copyText, relativeTime, sortProfiles } from "../lib/util.js";
+import { OS_LABELS, copyText, relativeTime, sortProfiles, tagStyle } from "../lib/util.js";
 import { Icon } from "./icons.js";
 import { Button, CountryChip, Empty, IconButton, Menu, Select, StatusChip } from "./ui.js";
 
@@ -65,7 +65,7 @@ function Row({ p, selected, pending }) {
       <div class="name-line">
         <span class="name">${p.name}</span>
         ${p.folder ? html`<span class="pill pill-folder"><${Icon} name="folder" size=${12} />${p.folder}</span>` : null}
-        ${(p.tags || []).slice(0, 3).map((t) => html`<span class="pill">${t}</span>`)}
+        ${(p.tags || []).slice(0, 3).map((t) => html`<span class="pill pill-tag" style=${tagStyle(t)}>${t}</span>`)}
       </div>
       <div class="sub">${p.notes || (p.start_urls || [])[0] || ""}</div>
     </td>
@@ -93,7 +93,10 @@ function Row({ p, selected, pending }) {
             catch (err) { toast(err.message, "error"); }
           } },
         "-",
-        { icon: "trash", label: "Delete", danger: true, disabled: live, onClick: () => deleteProfiles([p.id]) },
+        { icon: "copy", label: "Clone settings (new fingerprint)", onClick: () => cloneProfile(p, false) },
+        { icon: "copy", label: "Duplicate (same device & cookies)", disabled: live, onClick: () => cloneProfile(p, true) },
+        "-",
+        { icon: "trash", label: "Move to trash", danger: true, onClick: () => deleteProfiles([p.id]) },
       ]} />
     </td>
   </tr>`;
@@ -119,6 +122,33 @@ function AssignProxy({ ids }) {
     ]} />`;
 }
 
+function FolderMenu({ ids, profiles }) {
+  const folders = [...new Set(profiles.map((p) => p.folder).filter(Boolean))].sort();
+  const move = (folder) => bulkMeta(ids, { folder }, (n) => folder ? `Moved ${n} to "${folder}"` : `Removed ${n} from their folder`);
+  return html`<${Menu} up title="Move to folder"
+    trigger=${(toggle) => html`<${Button} size="sm" icon="folder" onClick=${toggle}>Folder<//>`}
+    items=${[
+      ...folders.map((f) => ({ icon: "folder", label: f, onClick: () => move(f) })),
+      { icon: "plus", label: "New folder…", onClick: () => moveToNewFolder(ids) },
+      "-",
+      { icon: "x", label: "No folder", onClick: () => move("") },
+    ]} />`;
+}
+
+function TagMenu({ ids, profiles }) {
+  const chosen = profiles.filter((p) => ids.includes(p.id));
+  const onChosen = [...new Set(chosen.flatMap((p) => p.tags || []))].sort();
+  const all = [...new Set(profiles.flatMap((p) => p.tags || []))].sort().filter((t) => !onChosen.includes(t) || chosen.some((p) => !(p.tags || []).includes(t)));
+  return html`<${Menu} up title="Tags"
+    trigger=${(toggle) => html`<${Button} size="sm" icon="tag" onClick=${toggle}>Tags<//>`}
+    items=${[
+      { icon: "plus", label: "Add tag…", onClick: () => addTagPrompt(ids) },
+      ...all.map((t) => ({ icon: "tag", label: `Add "${t}"`, onClick: () => bulkMeta(ids, { add_tags: [t] }, (n) => `Tagged ${n} "${t}"`) })),
+      onChosen.length ? "-" : null,
+      ...onChosen.map((t) => ({ icon: "x", label: `Remove "${t}"`, onClick: () => bulkMeta(ids, { remove_tags: [t] }, (n) => `Removed "${t}" from ${n}`) })),
+    ]} />`;
+}
+
 function BulkBar({ ids, profiles }) {
   const chosen = profiles.filter((p) => ids.includes(p.id));
   const running = chosen.filter((p) => p.status !== "stopped");
@@ -128,7 +158,9 @@ function BulkBar({ ids, profiles }) {
     <${Button} size="sm" kind="start" icon="play" disabled=${!stopped.length} onClick=${() => bulk(stopped.map((p) => p.id), launchProfile)}>Start ${stopped.length || ""}<//>
     <${Button} size="sm" kind="stop" icon="stop" disabled=${!running.length} onClick=${() => bulk(running.map((p) => p.id), stopProfile)}>Stop ${running.length || ""}<//>
     <${AssignProxy} ids=${stopped.map((p) => p.id)} />
-    <${Button} size="sm" kind="danger-ghost" icon="trash" disabled=${!stopped.length} onClick=${() => deleteProfiles(stopped.map((p) => p.id))}>Delete<//>
+    <${FolderMenu} ids=${ids} profiles=${profiles} />
+    <${TagMenu} ids=${ids} profiles=${profiles} />
+    <${Button} size="sm" kind="danger-ghost" icon="trash" onClick=${() => deleteProfiles(ids)}>Trash<//>
     <${IconButton} icon="x" title="Clear selection" onClick=${() => setState({ selection: new Set() })} />
   </div>`;
 }
@@ -156,8 +188,8 @@ export function ProfilesView() {
   return html`<section class="page">
     <header class="page-head">
       <div>
-        <h1>Profiles</h1>
-        <p class="muted">Isolated browser identities, each with its own fingerprint, cookies and network.</p>
+        <h1>${filters.folder === "all" ? "Profiles" : filters.folder || "No folder"}</h1>
+        <p class="muted">${filters.folder === "all" ? "Isolated browser identities, each with its own fingerprint, cookies and network." : `${filtered.length} profile${filtered.length === 1 ? "" : "s"} in this folder`}</p>
       </div>
       <${Button} kind="primary" icon="plus" onClick=${() => openDrawer(null)} title="New profile (⌘N)">New profile<//>
     </header>

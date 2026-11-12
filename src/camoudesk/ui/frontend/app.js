@@ -1,13 +1,14 @@
 // CamouDesk UI entry point.
 import { html, render, useEffect } from "./vendor/preact-htm.module.js";
 import { maybeInstallMock, whenReady } from "./lib/api.js";
-import { openDrawer, refreshProfiles, refreshProxies, refreshSettings } from "./lib/actions.js";
+import { openDrawer, refreshProfiles, refreshProxies, refreshSettings, refreshTrash } from "./lib/actions.js";
 import { getState, setState, useStore } from "./lib/store.js";
 import { debounce } from "./lib/util.js";
 import { ProfileDrawer } from "./components/ProfileDrawer.js";
 import { ProfilesView, focusSearch } from "./components/ProfilesView.js";
 import { ProxiesView } from "./components/ProxiesView.js";
 import { SettingsView } from "./components/SettingsView.js";
+import { TrashView } from "./components/TrashView.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { DialogHost, Toasts } from "./components/ui.js";
 
@@ -41,6 +42,7 @@ function App() {
       ${view === "profiles" ? html`<${ProfilesView} />` : null}
       ${view === "proxies" ? html`<${ProxiesView} />` : null}
       ${view === "settings" ? html`<${SettingsView} />` : null}
+      ${view === "trash" ? html`<${TrashView} />` : null}
     </main>
     <${ProfileDrawer} />
     <${DialogHost} />
@@ -59,7 +61,7 @@ window.camoudesk = {
   await maybeInstallMock();
   render(html`<${App} />`, document.getElementById("root"));
   await whenReady();
-  await Promise.all([refreshSettings(), refreshProfiles(), refreshProxies()]);
+  await Promise.all([refreshSettings(), refreshProfiles(), refreshProxies(), refreshTrash()]);
   // Pushes keep the list current; this slow poll is only a safety net.
   setInterval(refreshProfiles, 15000);
 })();

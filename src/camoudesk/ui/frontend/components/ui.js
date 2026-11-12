@@ -154,10 +154,13 @@ export function DialogHost() {
   const dialog = useStore((s) => s.dialog);
   const okRef = useRef();
   const cancelRef = useRef();
+  const inputRef = useRef();
+  const [text, setText] = useState("");
   useEffect(() => {
     if (!dialog) return;
-    // Destructive dialogs focus Cancel so Enter never deletes by accident.
-    setTimeout(() => (dialog.danger ? cancelRef : okRef).current?.focus(), 20);
+    setText(dialog.input ? dialog.input.value : "");
+    // Prompts focus their field; destructive dialogs focus Cancel so Enter never deletes by accident.
+    setTimeout(() => (dialog.input ? inputRef : dialog.danger ? cancelRef : okRef).current?.focus(), 20);
     const onKey = (e) => {
       if (e.key === "Escape") close(false);
     };
@@ -167,15 +170,22 @@ export function DialogHost() {
   if (!dialog) return null;
   const close = (result) => {
     setState({ dialog: null });
-    dialog.resolve(result);
+    if (dialog.input) dialog.resolve(result ? text.trim() : null);
+    else dialog.resolve(result);
   };
+  const canConfirm = !dialog.input || dialog.input.allowEmpty || text.trim();
   return html`<div class="overlay overlay-dialog" onMouseDown=${(e) => e.target === e.currentTarget && close(false)}>
     <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="dlg-title">
       <h3 id="dlg-title">${dialog.title}</h3>
-      <p>${dialog.message}</p>
+      ${dialog.message ? html`<p>${dialog.message}</p>` : null}
+      ${dialog.input
+        ? html`<label class="field dialog-field"><span class="field-label">${dialog.input.label}</span>
+            <input ref=${inputRef} class="input" value=${text} placeholder=${dialog.input.placeholder}
+              onInput=${(e) => setText(e.currentTarget.value)} onKeyDown=${(e) => e.key === "Enter" && canConfirm && close(true)} /></label>`
+        : null}
       <div class="dialog-actions">
         <button ref=${cancelRef} class="btn btn-secondary" onClick=${() => close(false)}><span>Cancel</span></button>
-        <button ref=${okRef} class=${`btn ${dialog.danger ? "btn-danger" : "btn-primary"}`} onClick=${() => close(true)}>
+        <button ref=${okRef} disabled=${!canConfirm} class=${`btn ${dialog.danger ? "btn-danger" : "btn-primary"}`} onClick=${() => close(true)}>
           <span>${dialog.confirmLabel}</span></button>
       </div>
     </div>

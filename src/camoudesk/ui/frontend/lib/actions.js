@@ -1,7 +1,7 @@
 // Data operations shared by views. All bridge calls go through here so busy states and
 // error toasts are handled consistently.
 import { call } from "./api.js";
-import { confirmDialog, getState, setPending, setState, toast } from "./store.js";
+import { confirmDialog, getState, promptDialog, setPending, setState, toast } from "./store.js";
 
 export async function refreshProfiles() {
   try {
@@ -71,29 +71,106 @@ export async function stopProfile(id) {
   await refreshProfiles();
 }
 
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+export async function refreshTrash() {
+  try {
+    setState({ trash: await call("profiles_trash_list") });
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
 export async function deleteProfiles(ids) {
   const profiles = getState().profiles.filter((p) => ids.includes(p.id));
   if (!profiles.length) return;
-  const what = profiles.length === 1 ? `"${profiles[0].name}"` : `${profiles.length} profiles`;
+  const running = profiles.filter((p) => p.status !== "stopped").length;
   const ok = await confirmDialog({
-    title: profiles.length === 1 ? "Delete profile?" : "Delete profiles?",
-    message: `${what} and their cookies, storage and fingerprint will be removed from this Mac. This cannot be undone.`,
-    confirmLabel: "Delete",
+    title: profiles.length === 1 ? `Move "${profiles[0].name}" to the trash?` : `Move ${plural(profiles.length, "profile")} to the trash?`,
+    message: `You can restore ${profiles.length === 1 ? "it" : "them"} from the trash with cookies and fingerprint intact.${running ? ` ${plural(running, "running browser")} will be closed first.` : ""}`,
+    confirmLabel: "Move to trash",
+  });
+  if (!ok) return;
+  profiles.forEach((p) => setPending(p.id, "delete"));
+  try {
+    const res = await call("profiles_trash", profiles.map((p) => p.id));
+    toast(`Moved ${plural(res.trashed, "profile")} to the trash`, "success");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+  profiles.forEach((p) => setPending(p.id, null));
+  setState({ selection: new Set() });
+  await Promise.all([refreshProfiles(), refreshTrash()]);
+}
+
+export async function restoreProfiles(ids) {
+  try {
+    const res = await call("profiles_restore", ids);
+    toast(`Restored ${plural(res.restored, "profile")}`, "success");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+  await Promise.all([refreshProfiles(), refreshTrash()]);
+}
+
+export async function purgeProfiles(ids, everything = false) {
+  const n = everything ? getState().trash.length : ids.length;
+  const ok = await confirmDialog({
+    title: everything ? "Empty the trash?" : n === 1 ? "Delete forever?" : `Delete ${plural(n, "profile")} forever?`,
+    message: `${plural(n, "profile")} and ${n === 1 ? "its" : "their"} cookies, storage and fingerprint will be erased from this Mac. This cannot be undone.`,
+    confirmLabel: "Delete forever",
     danger: true,
   });
   if (!ok) return;
-  let failed = 0;
-  for (const p of profiles) {
-    setPending(p.id, "delete");
-    try {
-      await call("profiles_delete", p.id);
-    } catch (err) {
-      failed++;
-      toast(`${p.name}: ${err.message}`, "error");
-    }
-    setPending(p.id, null);
+  try {
+    const res = everything ? await call("profiles_empty_trash") : await call("profiles_purge", ids);
+    toast(`Deleted ${plural(res.purged, "profile")} forever`, "success");
+  } catch (err) {
+    toast(err.message, "error");
   }
-  if (failed < profiles.length) toast(`Deleted ${profiles.length - failed} profile${profiles.length - failed === 1 ? "" : "s"}`, "success");
+  await refreshTrash();
+}
+
+export async function cloneProfile(p, copyData) {
+  try {
+    const row = await call("profiles_clone", p.id, copyData, "");
+    toast(copyData ? `Duplicated as "${row.name}" (same device, cookies and logins)` : `Created "${row.name}" with a new fingerprint`, "success", 6000);
+  } catch (err) {
+    toast(err.message, "error");
+  }
+  await refreshProfiles();
+}
+
+export async function bulkMeta(ids, patch, message) {
+  try {
+    const res = await call("profiles_bulk_meta", ids, patch);
+    toast(message(res.changed), "success");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+  await refreshProfiles();
+}
+
+export async function moveToNewFolder(ids) {
+  const name = await promptDialog({ title: "New folder", label: "Folder name", placeholder: "e.g. Shops", confirmLabel: "Move" });
+  if (name) await bulkMeta(ids, { folder: name }, (n) => `Moved ${plural(n, "profile")} to "${name}"`);
+}
+
+export async function addTagPrompt(ids) {
+  const tag = await promptDialog({ title: "Add tag", label: "Tag", placeholder: "e.g. warmed", confirmLabel: "Add tag" });
+  if (tag) await bulkMeta(ids, { add_tags: [tag] }, (n) => `Tagged ${plural(n, "profile")} "${tag}"`);
+}
+
+export async function renameFolder(old) {
+  const name = await promptDialog({ title: `Rename "${old}"`, label: "Folder name", initial: old, confirmLabel: "Rename", allowEmpty: true });
+  if (name === null || name === old) return;
+  try {
+    await call("folders_rename", old, name);
+    setState((s) => ({ filters: { ...s.filters, folder: name || "" } }));
+    toast(name ? `Renamed to "${name}"` : `Removed folder "${old}"`, "success");
+  } catch (err) {
+    toast(err.message, "error");
+  }
   await refreshProfiles();
 }
 

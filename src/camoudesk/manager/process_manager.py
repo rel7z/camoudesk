@@ -545,6 +545,8 @@ class ProcessManager:
         profile = self.store.get_profile(safe_id)
         if profile is None:
             return {"ok": False, "error": f"Profile '{safe_id}' does not exist"}
+        if profile.deleted_at:
+            return {"ok": False, "error": "This profile is in the trash; restore it first."}
 
         chosen = mode or self.default_mode(profile, headless)
         if chosen not in _MODES:
