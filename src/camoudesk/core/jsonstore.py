@@ -27,6 +27,20 @@ def atomic_write_json(path: Path, payload: Any, indent: int = 2) -> None:
         raise
 
 
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write bytes to a temp file in the same directory and atomically rename it over ``path``."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}-", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+        os.replace(tmp_name, path)
+    except BaseException:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+        raise
+
+
 @contextmanager
 def locked(lock_path: Path) -> Iterator[None]:
     """Exclusive lock shared by threads in this process and by other processes (flock)."""

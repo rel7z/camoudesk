@@ -50,7 +50,7 @@ const profiles = [
 
 let settings = {
   new_profile: { os: "macos", timezone: "auto", locale: "auto", block_webrtc: true, humanize: true, start_urls: ["https://pixelscan.net"] },
-  theme: "system", api: { enabled: false, port: 35120, token: "" },
+  theme: "system", search_engine: "duckduckgo", api: { enabled: false, port: 35120, token: "" },
 };
 
 const find = (id) => {

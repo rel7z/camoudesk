@@ -11,6 +11,7 @@ import ipaddress
 import os
 from typing import Any, Dict, List, Mapping, Optional
 
+from camoudesk.core import search_engine
 from camoudesk.core.fingerprint import ensure_profile_fingerprint
 from camoudesk.models.profile import Profile, ProxyConfig
 
@@ -274,6 +275,17 @@ def _proxy_store_for(store: Any) -> Any:
     return ProxyStore(store.app_dir)
 
 
+def _search_choice(store: Any) -> Optional[str]:
+    """The address-bar search engine from Settings; None leaves the profile as it is."""
+    from camoudesk.core.settings_store import SettingsStore
+
+    try:
+        choice = SettingsStore(store.app_dir).get().get("search_engine", search_engine.DEFAULT)
+    except Exception:
+        return None
+    return choice if choice in search_engine.CHOICES else None
+
+
 def profile_camoufox_kwargs(
     profile: Profile, store: Any, network: Network, headless: bool
 ) -> "tuple[Dict[str, Any], Optional[str]]":
@@ -288,7 +300,9 @@ def profile_camoufox_kwargs(
     # choice is to block WebRTC, never to let it reveal the real IP.
     mode = profile.webrtc_mode
     block_webrtc = mode == "block" or (mode == "spoof" and not geoip)
-    prefs: Dict[str, Any] = {}
+    # Camoufox's policy points address-bar searches at 127.0.0.1; install the chosen engine.
+    choice = _search_choice(store)
+    prefs: Dict[str, Any] = dict(search_engine.prepare_profile_search(ff_dir, choice)) if choice else {}
     geo_mode = ov.get("geolocation", "auto")
     if geo_mode == "block":
         prefs["permissions.default.geo"] = 2

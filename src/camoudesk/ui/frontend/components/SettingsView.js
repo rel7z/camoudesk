@@ -7,6 +7,15 @@ import { LOCALES, OS_LABELS, copyText, timezones } from "../lib/util.js";
 import { Icon } from "./icons.js";
 import { Button, Field, Segmented, Select, TextArea, TextInput, Toggle } from "./ui.js";
 
+const SEARCH_ENGINES = [
+  { value: "duckduckgo", label: "DuckDuckGo" },
+  { value: "google", label: "Google" },
+  { value: "bing", label: "Bing" },
+  { value: "brave", label: "Brave Search" },
+  { value: "startpage", label: "Startpage" },
+  { value: "none", label: "None (Camoufox default: searches fail)" },
+];
+
 function Section({ title, desc, children }) {
   return html`<section class="settings-section">
     <div class="settings-intro"><h2>${title}</h2>${desc ? html`<p class="muted">${desc}</p>` : null}</div>
@@ -134,6 +143,12 @@ export function SettingsView() {
         ${geoip.path ? html`<span>Location</span><strong class="mono wrap">${geoip.path}</strong>` : null}
       </div>
       <div><${Button} icon="download" busy=${downloading} disabled=${!geoip.available} onClick=${downloadGeoip}>${geoip.installed ? "Update database" : "Download database"}<//></div>
+    <//>
+
+    <${Section} title="Search" desc="Camoufox ships with web search turned off, so text typed in the address bar goes nowhere. Profiles use this engine instead. It applies the next time each profile opens and is not visible to websites.">
+      <${Field} label="Address bar search engine">
+        <${Select} value=${settings.search_engine} onChange=${(search_engine) => save({ search_engine })} options=${SEARCH_ENGINES} />
+      <//>
     <//>
 
     <${ApiSection} />

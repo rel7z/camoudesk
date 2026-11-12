@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
+from camoudesk.core import search_engine
 from camoudesk.core.fingerprint import ensure_profile_fingerprint
 from camoudesk.core.launcher import build_camoufox_kwargs, build_launch_spec, has_proxy_credentials
 from camoudesk.core.storage import ProfileStore
@@ -142,6 +143,8 @@ class TestDirectLaunchLive(unittest.TestCase):
             locale=prof.locale,
             block_webrtc=prof.block_webrtc,
             humanize=prof.humanize,
+            # The search-engine policy prefs profile_camoufox_kwargs adds for every launch.
+            firefox_user_prefs=search_engine.policy_prefs(search_engine.camoufox_resources_dir()) or None,
         )
         kwargs.pop("persistent_context")
         # Exactly what camoufox.sync_api.Camoufox(persistent_context=True, **kwargs) computes.

@@ -10,6 +10,7 @@ CamouDesk is an open-source macOS (`arm64`) anti-detect browser profile manager 
 - `src/camoudesk/core/jsonstore.py`, `proxy_store.py`, `settings_store.py` — shared atomic/flock helpers; `proxies.json` (0600) and `settings.json`.
 - `src/camoudesk/core/fingerprint.py` — Deterministic `fpgen` fingerprint generation (verified for OS coherence and pinned screen size) and persistence per profile.
 - `src/camoudesk/core/launcher.py` — `resolve_network` (saved/inline proxy, "auto" timezone/locale, exit IP), `profile_camoufox_kwargs` (single kwargs builder for every launch path), `build_launch_spec` (direct launch: binary, args, minimal env), GPU/screen option lists.
+- `src/camoudesk/core/search_engine.py` — Address-bar search engine (Settings → Search) written into each profile's `search.json.mozlz4` before launch, plus prefs that stop Camoufox's SearchEngines policy (which defaults to a placeholder engine on 127.0.0.1) from removing it.
 - `src/camoudesk/core/proxy_forwarder.py` — Loopback `ProxyForwarder` that authenticates to the upstream proxy for direct-mode browsers (HTTP `Proxy-Authorization`, SOCKS5 RFC 1929, remote DNS, upstream 407 → 502).
 - `src/camoudesk/core/proxy.py`, `proxy_parse.py`, `geo.py`, `geoip_db.py` — proxy checks, provider-format parser, country → locale (deterministic), GeoIP database status/download.
 - `src/camoudesk/core/cookies.py` — cookie parsers (extension JSON, Playwright, Netscape), sqlite reader, exporters.

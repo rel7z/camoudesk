@@ -6,6 +6,7 @@ import secrets
 from typing import Any, Dict, Optional
 
 from camoudesk.config import DEFAULT_STARTUP_URL, SUPPORTED_OS, get_app_support_dir
+from camoudesk.core import search_engine
 from camoudesk.core.jsonstore import atomic_write_json, locked, read_json
 
 DEFAULTS: Dict[str, Any] = {
@@ -18,6 +19,8 @@ DEFAULTS: Dict[str, Any] = {
         "start_urls": [DEFAULT_STARTUP_URL],
     },
     "theme": "dark",
+    # Address-bar search engine written into every profile at launch (see core/search_engine).
+    "search_engine": search_engine.DEFAULT,
     "api": {"enabled": False, "port": 35120, "token": ""},
 }
 
@@ -42,6 +45,8 @@ def _validate(settings: Dict[str, Any]) -> Dict[str, Any]:
         np[key] = bool(np[key])
     if settings["theme"] not in ("dark", "light", "system"):
         raise ValueError("Theme must be dark, light or system")
+    if settings["search_engine"] not in search_engine.CHOICES:
+        raise ValueError(f"Unknown search engine '{settings['search_engine']}'")
     api = settings["api"]
     api["enabled"] = bool(api["enabled"])
     port = int(api["port"])

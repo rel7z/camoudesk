@@ -15,6 +15,7 @@ from camoudesk.core.launcher import (
     profile_camoufox_kwargs,
     resolve_network,
 )
+from camoudesk.core.settings_store import SettingsStore
 from camoudesk.core.storage import ProfileStore
 from camoudesk.models.profile import clean_fp_overrides
 
@@ -29,6 +30,8 @@ class StoreCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.store = ProfileStore(app_dir=root / "app", legacy_dir=root / "legacy")
+        # Only the fingerprint overrides are under test here, not the search engine prefs.
+        SettingsStore(self.store.app_dir).update({"search_engine": "none"})
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
