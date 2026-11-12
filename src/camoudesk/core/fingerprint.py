@@ -12,7 +12,26 @@ from camoufox.fingerprints import generate_fingerprint
 from camoudesk.models.profile import FingerprintSummary, validate_os_target
 
 FINGERPRINT_FILENAME = "fingerprint.json"
-_SCREEN_ATTEMPTS = 8
+_GENERATE_ATTEMPTS = 12
+
+# Every navigator signal must name the same OS: (platform, oscpu, userAgent) markers.
+_OS_MARKERS = {
+    "macos": ("mac", "mac os x", "macintosh"),
+    "windows": ("win", "windows", "windows"),
+    "linux": ("linux", "linux", "linux"),
+}
+
+
+def fingerprint_matches_os(fp: Dict[str, Any], os_target: str) -> bool:
+    """True when navigator.platform, oscpu and userAgent all agree with ``os_target``."""
+    nav = fp.get("navigator") or {}
+    platform_m, oscpu_m, ua_m = _OS_MARKERS[os_target]
+    platform = str(nav.get("platform") or "").lower()
+    oscpu = str(nav.get("oscpu") or "").lower()
+    ua = str(nav.get("userAgent") or "").lower()
+    if platform_m not in platform or ua_m not in ua:
+        return False
+    return not oscpu or oscpu_m in oscpu
 
 
 def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -55,27 +74,33 @@ def generate_and_save_fingerprint(
     of that OS has raises ValueError and the saved fingerprint is left untouched.
     """
     normalized_os = validate_os_target(os_target)
+    kwargs: Dict[str, Any] = {"os": normalized_os}
     if screen:
         from camoufox.fingerprints import Screen
 
         w, h = screen
-        bound = Screen(min_width=w, max_width=w, min_height=h, max_height=h)
-        raw_fp = None
-        # fpgen does not always honour the bound (2560x1440 on Windows came back as 3440x1440
-        # about 1 in 8 times), so verify the result and retry rather than save the wrong size.
-        for _ in range(_SCREEN_ATTEMPTS):
-            try:
-                candidate = generate_fingerprint(os=normalized_os, screen=bound)
-            except Exception as exc:
-                raise ValueError(f"No realistic {normalized_os} device has a {w}x{h} screen; pick another size.") from exc
-            scr = candidate.get("screen") or {}
-            if scr.get("width") == w and scr.get("height") == h:
-                raw_fp = candidate
-                break
-        if raw_fp is None:
-            raise ValueError(f"Could not generate a {normalized_os} fingerprint with a {w}x{h} screen; pick another size.")
-    else:
-        raw_fp = generate_fingerprint(os=normalized_os)
+        kwargs["screen"] = Screen(min_width=w, max_width=w, min_height=h, max_height=h)
+    raw_fp = None
+    # fpgen's output is verified rather than trusted: it ignored an exact screen bound about 1 in
+    # 8 times (2560x1440 -> 3440x1440 on Windows), and ~3% of "linux" fingerprints were Windows
+    # or mixed (Linux platform with a Windows oscpu) -- an incoherence detection scripts look for.
+    for _ in range(_GENERATE_ATTEMPTS):
+        try:
+            candidate = generate_fingerprint(**kwargs)
+        except Exception as exc:
+            if screen:
+                raise ValueError(f"No realistic {normalized_os} device has a {screen[0]}x{screen[1]} screen; pick another size.") from exc
+            raise
+        if not fingerprint_matches_os(candidate, normalized_os):
+            continue
+        scr = candidate.get("screen") or {}
+        if screen and (scr.get("width"), scr.get("height")) != tuple(screen):
+            continue
+        raw_fp = candidate
+        break
+    if raw_fp is None:
+        size = f" with a {screen[0]}x{screen[1]} screen" if screen else ""
+        raise ValueError(f"Could not generate a consistent {normalized_os} fingerprint{size}; try again or pick another size.")
     # Round-trip via JSON so stored and in-memory structures match identically.
     serializable = json.loads(json.dumps(raw_fp))
     _atomic_write_json(profile_dir / FINGERPRINT_FILENAME, serializable)

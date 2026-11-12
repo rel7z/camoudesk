@@ -42,3 +42,28 @@ class TestFingerprintPersistence(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOsCoherence(unittest.TestCase):
+    def test_every_navigator_signal_must_match_the_os(self) -> None:
+        from camoudesk.core.fingerprint import fingerprint_matches_os
+
+        linux_ua = "Mozilla/5.0 (X11; Linux x86_64; rv:158.0) Gecko/20100101 Firefox/158.0"
+        win_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:158.0) Gecko/20100101 Firefox/158.0"
+        good = {"navigator": {"platform": "Linux x86_64", "oscpu": "Linux x86_64", "userAgent": linux_ua}}
+        # Seen from fpgen ~1-2% of the time for os="linux": Linux platform, Windows oscpu.
+        mixed = {"navigator": {"platform": "Linux x86_64", "oscpu": "Windows NT 10.0; Win64; x64", "userAgent": linux_ua}}
+        windows = {"navigator": {"platform": "Win32", "oscpu": "Windows NT 10.0; Win64; x64", "userAgent": win_ua}}
+        self.assertTrue(fingerprint_matches_os(good, "linux"))
+        self.assertFalse(fingerprint_matches_os(mixed, "linux"))
+        self.assertFalse(fingerprint_matches_os(windows, "linux"))
+        self.assertTrue(fingerprint_matches_os(windows, "windows"))
+
+    def test_generated_fingerprints_are_coherent(self) -> None:
+        from camoudesk.core.fingerprint import fingerprint_matches_os
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for os_ in ("linux", "windows", "macos"):
+                for _ in range(15):
+                    fp, _ = generate_and_save_fingerprint(Path(tmp), os_)
+                    self.assertTrue(fingerprint_matches_os(fp, os_), fp["navigator"])
