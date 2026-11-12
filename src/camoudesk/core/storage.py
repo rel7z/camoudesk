@@ -27,8 +27,10 @@ from camoudesk.core.fingerprint import (
 from camoudesk.models.profile import (
     Profile,
     ProxyConfig,
+    clean_fp_overrides,
     clean_start_urls,
     clean_tags,
+    parse_screen,
     normalize_country,
     normalize_ip,
     safe_ref,
@@ -246,7 +248,13 @@ class ProfileStore:
         pdir = self.profile_dir(safe_id)
         pdir.mkdir(parents=True, exist_ok=True)
         self.firefox_data_dir(safe_id).mkdir(parents=True, exist_ok=True)
-        _, summary = ensure_profile_fingerprint(pdir, norm_os)
+        overrides = clean_fp_overrides({k: v for k, v in (fp_overrides or {}).items() if v is not None})
+        if "webrtc" in overrides:
+            block_webrtc = overrides["webrtc"] == "block"
+        if overrides.get("screen"):
+            _, summary = generate_and_save_fingerprint(pdir, norm_os, parse_screen(overrides["screen"]))
+        else:
+            _, summary = ensure_profile_fingerprint(pdir, norm_os)
         urls = clean_start_urls(start_urls if start_urls else [startup_url or DEFAULT_STARTUP_URL])
 
         return Profile(
@@ -265,7 +273,7 @@ class ProfileStore:
             folder=(folder or "").strip()[:80],
             tags=clean_tags(tags or []),
             proxy_id=safe_ref(proxy_id),
-            fp_overrides=dict(fp_overrides or {}),
+            fp_overrides=overrides,
             fingerprint_summary=summary_dict(summary),
         )
 
@@ -342,7 +350,12 @@ class ProfileStore:
             if "tags" in updates:
                 target.tags = clean_tags(updates["tags"])
             if "fp_overrides" in updates and isinstance(updates["fp_overrides"], dict):
-                target.fp_overrides = dict(updates["fp_overrides"])
+                merged = {**target.fp_overrides, **updates["fp_overrides"]}
+                target.fp_overrides = clean_fp_overrides({k: v for k, v in merged.items() if v is not None})
+                if "webrtc" in target.fp_overrides:
+                    target.block_webrtc = target.fp_overrides["webrtc"] == "block"
+            elif "block_webrtc" in updates:
+                target.fp_overrides.pop("webrtc", None)
             if "timezone" in updates:
                 target.timezone = str(updates["timezone"] or "auto").strip()
             if "locale" in updates:
@@ -360,22 +373,41 @@ class ProfileStore:
                 new_os = validate_os_target(str(updates["os"]))
                 if new_os != target.os:
                     target.os = new_os
-                    _, summary = generate_and_save_fingerprint(self.profile_dir(safe_id), new_os)
+                    # A GPU recorded for the old OS is not valid for the new one.
+                    target.fp_overrides.pop("webgl", None)
+                    try:
+                        _, summary = generate_and_save_fingerprint(
+                            self.profile_dir(safe_id), new_os, parse_screen(target.fp_overrides.get("screen"))
+                        )
+                    except ValueError:
+                        target.fp_overrides.pop("screen", None)
+                        _, summary = generate_and_save_fingerprint(self.profile_dir(safe_id), new_os)
                     target.fingerprint_summary = summary_dict(summary)
 
             self._write_entries(entries)
             return target
 
-    def regenerate_fingerprint(self, profile_id: str) -> Profile:
+    _KEEP = object()
+
+    def regenerate_fingerprint(self, profile_id: str, screen: Any = _KEEP) -> Profile:
+        """New fingerprint for the profile's OS. ``screen``: "WxH" to pin, "" for any size,
+        omitted to keep the previously pinned size."""
         safe_id = sanitize_profile_id(profile_id)
         with self._locked():
             entries = self._read_entries()
             target = self._find(entries, safe_id)
             if target is None:
                 raise KeyError(f"Profile '{safe_id}' not found")
+            if screen is not ProfileStore._KEEP:
+                if screen and not parse_screen(screen):
+                    raise ValueError("Screen must look like 1920x1080")
+                if screen:
+                    target.fp_overrides["screen"] = f"{parse_screen(screen)[0]}x{parse_screen(screen)[1]}"
+                else:
+                    target.fp_overrides.pop("screen", None)
             pdir = self.profile_dir(safe_id)
             pdir.mkdir(parents=True, exist_ok=True)
-            _, summary = generate_and_save_fingerprint(pdir, target.os)
+            _, summary = generate_and_save_fingerprint(pdir, target.os, parse_screen(target.fp_overrides.get("screen")))
             target.fingerprint_summary = summary_dict(summary)
             self._write_entries(entries)
             return target

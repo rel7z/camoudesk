@@ -70,6 +70,7 @@ function applyPayload(p, d) {
     name: d.name ?? p.name, os: d.os ?? p.os, folder: d.folder ?? p.folder, tags: d.tags ?? p.tags, notes: d.notes ?? p.notes,
     start_urls: d.start_urls ?? p.start_urls, timezone: d.timezone ?? p.timezone, locale: d.locale ?? p.locale,
     block_webrtc: d.block_webrtc ?? p.block_webrtc, humanize: d.humanize ?? p.humanize, fingerprint_summary: FP[d.os ?? p.os],
+    fp_overrides: d.fp_overrides ? Object.fromEntries(Object.entries({ ...p.fp_overrides, ...d.fp_overrides }).filter(([, v]) => v != null)) : p.fp_overrides,
   });
   if (d.proxy_mode === "none") Object.assign(p, { proxy_mode: "none", proxy_id: "", proxy_parts: null, proxy_label: "Direct", proxy_country: "", proxy_missing: false, effective_timezone: "", effective_locale: "" });
   if (d.proxy_mode === "saved") withProxy(p, proxies.find((x) => x.id === d.proxy_id) || (() => { throw new Error("Choose a saved proxy"); })());
@@ -99,11 +100,19 @@ export function installMockApi() {
       if (p.status !== "stopped") throw new Error("Stop the running browser before editing this profile.");
       return { ...applyPayload(p, d) };
     }),
-    profiles_regenerate_fingerprint: guard((id) => {
+    profiles_regenerate_fingerprint: guard((id, screen) => {
       const p = find(id);
-      p.fingerprint_summary = { ...p.fingerprint_summary, screen: ["1440x900", "1920x1200", "2560x1600"][Math.floor(Math.random() * 3)] };
+      if (screen != null) p.fp_overrides = { ...p.fp_overrides, screen: screen || undefined };
+      p.fingerprint_summary = { ...p.fingerprint_summary, screen: screen || ["1440x900", "1920x1200", "2560x1600"][Math.floor(Math.random() * 3)] };
       return { ...p };
     }),
+    fingerprint_options: guard((os) => ({
+      gpus: { macos: [["Apple", "Apple M1, or similar"], ["ATI Technologies Inc.", "Radeon R9 200 Series, or similar"]],
+        windows: [["Google Inc. (NVIDIA)", "ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar"], ["Google Inc. (Intel)", "ANGLE (Intel, Intel(R) HD Graphics 400 Direct3D11 vs_5_0 ps_5_0), or similar"]],
+        linux: [["Intel", "Intel(R) HD Graphics, or similar"], ["AMD", "Radeon R9 200 Series, or similar"]] }[os],
+      screens: { macos: ["1440x900", "1512x982", "1710x1107", "1920x1080"], windows: ["1366x768", "1536x864", "1920x1080", "2560x1440"], linux: ["1920x1080", "2560x1440"] }[os],
+      geoip_installed: false,
+    })),
     profiles_delete: guard((id) => {
       profiles.splice(profiles.indexOf(find(id)), 1);
       return { id };

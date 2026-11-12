@@ -36,6 +36,12 @@ function formFrom(row, defaults) {
     locale: src.locale || "auto",
     block_webrtc: src.block_webrtc ?? true,
     humanize: src.humanize ?? true,
+    fp_webgl: row?.fp_overrides?.webgl ? row.fp_overrides.webgl.join("|||") : "",
+    fp_webrtc: row?.fp_overrides?.webrtc || ((src.block_webrtc ?? true) ? "block" : "real"),
+    fp_geo: row?.fp_overrides?.geolocation || "auto",
+    fp_block_images: Boolean(row?.fp_overrides?.block_images),
+    fp_block_webgl: Boolean(row?.fp_overrides?.block_webgl),
+    fp_screen: row?.fp_overrides?.screen || "",
   };
 }
 
@@ -50,8 +56,17 @@ function toPayload(f, check) {
     proxy_mode: f.proxy_mode,
     timezone: f.timezone.trim() || "auto",
     locale: f.locale.trim() || "auto",
-    block_webrtc: f.block_webrtc,
+    block_webrtc: f.fp_webrtc === "block",
     humanize: f.humanize,
+    fp_overrides: {
+      webgl: f.fp_webgl ? f.fp_webgl.split("|||") : null,
+      webrtc: f.fp_webrtc,
+      geolocation: f.fp_geo,
+      block_images: f.fp_block_images,
+      block_webgl: f.fp_block_webgl,
+      // New profiles may pin a screen size at creation; existing ones change it via "Generate".
+      ...(f.fp_screen ? { screen: f.fp_screen } : {}),
+    },
   };
   if (f.proxy_mode === "saved") payload.proxy_id = f.proxy_id;
   if (f.proxy_mode === "custom") {
@@ -189,40 +204,79 @@ function GeneralTab({ f, set, disabled, isNew }) {
   </div>`;
 }
 
-function FingerprintTab({ row, disabled }) {
+function FingerprintTab({ f, set, row, disabled }) {
+  const [opts, setOpts] = useState(null);
   const [busy, setBusy] = useState(false);
-  if (!row) return html`<p class="note"><${Icon} name="info" /> A unique fingerprint for the chosen system is generated when you create the profile, and stays the same on every launch.</p>`;
-  const fp = row.fingerprint_summary || {};
+  const [screen, setScreen] = useState(f.fp_screen);
+  useEffect(() => {
+    let live = true;
+    call("fingerprint_options", f.os).then((o) => live && setOpts(o)).catch((err) => toast(err.message, "error"));
+    return () => { live = false; };
+  }, [f.os]);
+  useEffect(() => setScreen(f.fp_screen), [f.fp_screen]);
+  const fp = row?.fingerprint_summary || {};
+  const gpuChoices = opts ? opts.gpus.map(([v, r]) => ({ value: `${v}|||${r}`, label: r.replace(/, or similar$/, "") })) : [];
+  const screens = opts ? [...new Set([...(screen && !opts.screens.includes(screen) ? [screen] : []), ...opts.screens])] : [];
+
   const regenerate = async () => {
     const ok = await confirmDialog({
       title: "Generate a new fingerprint?",
-      message: "Websites will see this profile as a different device. Cookies and logins are kept, but sites that track devices may ask you to verify again.",
+      message: `Websites will see this profile as a different device${screen ? ` with a ${screen} screen` : ""}. Cookies and logins are kept, but sites that track devices may ask you to verify again.`,
       confirmLabel: "Generate new fingerprint",
       danger: true,
     });
     if (!ok) return;
     setBusy(true);
     try {
-      await call("profiles_regenerate_fingerprint", row.id);
+      const updated = await call("profiles_regenerate_fingerprint", row.id, screen);
       await refreshProfiles();
-      toast("New fingerprint generated", "success");
+      set({ fp_screen: updated.fp_overrides?.screen || "" });
+      toast(`New fingerprint generated (${updated.fingerprint_summary?.screen || "any screen"})`, "success");
     } catch (err) {
-      toast(err.message, "error");
+      toast(err.message, "error", 7000);
     }
     setBusy(false);
   };
+
   return html`<div class="form">
-    <div class="kv-card">
+    ${row ? html`<div class="kv-card">
       <span>System</span><strong>${OS_LABELS[row.os] || row.os}</strong>
       <span>Screen</span><strong>${fp.screen || "—"}</strong>
       <span>CPU cores</span><strong>${fp.cores || "—"}</strong>
-      <span>Graphics</span><strong title=${fp.gpu}>${gpuLabel(fp.gpu) || "—"}</strong>
+      <span>Graphics</span><strong title=${fp.gpu}>${f.fp_webgl ? f.fp_webgl.split("|||")[1].replace(/, or similar$/, "") + " (override)" : gpuLabel(fp.gpu) || "—"}</strong>
       <span>User agent</span><strong class="mono wrap">${fp.user_agent || "—"}</strong>
+    </div>` : html`<p class="note"><${Icon} name="info" /> A unique fingerprint for the chosen system is generated when you create the profile, and stays the same on every launch.</p>`}
+
+    <div class="grid-2">
+      <${Field} label="Screen size" hint=${row ? "Applied when you generate a new fingerprint" : "The fingerprint is generated for this size"}>
+        <${Select} value=${screen} disabled=${disabled || !opts} onChange=${(v) => { setScreen(v); if (!row) set({ fp_screen: v }); }}
+          options=${[{ value: "", label: "Any realistic size" }, ...screens.map((x) => ({ value: x, label: x.replace("x", " × ") }))]} />
+      <//>
+      ${row ? html`<div class="field"><span class="field-label"> </span>
+        <${Button} icon="refresh" busy=${busy} disabled=${disabled} onClick=${regenerate}>Generate new fingerprint<//></div>` : html`<div />`}
     </div>
-    <div class="inline">
-      <${Button} icon="refresh" busy=${busy} disabled=${disabled} onClick=${regenerate}>Generate new fingerprint<//>
-      <span class="muted small">Same fingerprint on every launch until you change it.</span>
-    </div>
+
+    <${Field} label="Graphics card (WebGL)" wide hint="Only devices Firefox has really been seen on for this system are offered.">
+      <${Select} value=${f.fp_webgl} disabled=${disabled || !opts} onChange=${(fp_webgl) => set({ fp_webgl })}
+        options=${[{ value: "", label: "From the fingerprint (recommended)" }, ...gpuChoices]} />
+    <//>
+
+    <${Field} label="WebRTC" wide hint=${f.fp_webrtc === "spoof" && opts && !opts.geoip_installed
+      ? "The GeoIP database isn't installed (Settings), so WebRTC will be blocked instead of exposing your IP."
+      : f.fp_webrtc === "real" ? "Not recommended: WebRTC can reveal your real IP even behind a proxy." : "Blocking prevents WebRTC from revealing your real IP."}>
+      <${Segmented} value=${f.fp_webrtc} disabled=${disabled} onChange=${(fp_webrtc) => set({ fp_webrtc })} options=${[
+        { value: "block", label: "Block" }, { value: "spoof", label: "Show proxy IP" }, { value: "real", label: "Real" }]} />
+    <//>
+
+    <${Field} label="Geolocation" wide hint=${f.fp_geo === "auto" ? "Sites asking for location get coordinates matching the proxy (needs the GeoIP database)." : f.fp_geo === "prompt" ? "Sites must ask; nothing is shared unless you allow it." : "All location requests are denied."}>
+      <${Segmented} value=${f.fp_geo} disabled=${disabled} onChange=${(fp_geo) => set({ fp_geo })} options=${[
+        { value: "auto", label: "Match proxy" }, { value: "prompt", label: "Ask" }, { value: "block", label: "Block" }]} />
+    <//>
+
+    <${Toggle} checked=${f.fp_block_images} disabled=${disabled} onChange=${(fp_block_images) => set({ fp_block_images })}
+      label="Block images" hint="Saves bandwidth on metered proxies." />
+    <${Toggle} checked=${f.fp_block_webgl} disabled=${disabled} onChange=${(fp_block_webgl) => set({ fp_block_webgl })}
+      label="Disable WebGL" hint="Some sites treat a missing WebGL as suspicious; leave off unless you need it." />
   </div>`;
 }
 
@@ -269,8 +323,6 @@ function LogsPanel({ row }) {
 function AdvancedTab({ f, set, row, disabled }) {
   const appInfo = useStore((s) => s.appInfo);
   return html`<div class="form">
-    <${Toggle} checked=${f.block_webrtc} disabled=${disabled} onChange=${(block_webrtc) => set({ block_webrtc })}
-      label="Block WebRTC" hint="Prevents WebRTC from revealing your real IP address." />
     <${Toggle} checked=${f.humanize} disabled=${disabled} onChange=${(humanize) => set({ humanize })}
       label="Human-like cursor movement" hint="Natural mouse paths when pages are automated." />
     ${row
@@ -359,7 +411,7 @@ export function ProfileDrawer() {
       <div class="drawer-body">
         ${tab === "general" ? html`<${GeneralTab} f=${f} set=${set} disabled=${running} isNew=${isNew} />` : null}
         ${tab === "network" ? html`<${NetworkTab} f=${f} set=${set} row=${row} disabled=${running} check=${check} setCheck=${setCheck} />` : null}
-        ${tab === "fingerprint" ? html`<${FingerprintTab} row=${row} disabled=${running} />` : null}
+        ${tab === "fingerprint" ? html`<${FingerprintTab} f=${f} set=${set} row=${row} disabled=${running} />` : null}
         ${tab === "advanced" ? html`<${AdvancedTab} f=${f} set=${set} row=${row} disabled=${running} />` : null}
       </div>
       <footer class="drawer-foot">

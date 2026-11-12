@@ -16,14 +16,14 @@ from urllib.parse import quote, unquote
 from camoudesk import __version__
 from camoudesk.core import geoip_db
 from camoudesk.core.geo import locale_for_country
-from camoudesk.core.launcher import resolve_network
+from camoudesk.core.launcher import SCREEN_PRESETS, gpu_options, resolve_network
 from camoudesk.core.proxy import check_proxy_config
 from camoudesk.core.proxy_parse import parse_proxy_line, parse_proxy_list
 from camoudesk.core.proxy_store import ProxyStore
 from camoudesk.core.settings_store import SettingsStore
 from camoudesk.core.storage import ProfileStore
 from camoudesk.manager.process_manager import ProcessManager
-from camoudesk.models.profile import Profile, ProxyConfig
+from camoudesk.models.profile import Profile, ProxyConfig, validate_os_target
 from camoudesk.models.proxy import SavedProxy
 
 
@@ -199,6 +199,9 @@ class DesktopBridgeApi:
     def profiles_create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         defaults = self.settings.get()["new_profile"]
         data = {**defaults, **self._normalize(payload or {})}
+        webgl = (data.get("fp_overrides") or {}).get("webgl")
+        if webgl and list(webgl) not in gpu_options(validate_os_target(data.get("os") or "macos")):
+            raise ValueError("That graphics card is not available for this operating system.")
         return self._row(self.store.create_profile(data))
 
     @_bridge
@@ -208,13 +211,29 @@ class DesktopBridgeApi:
         current = self.store.get_profile(profile_id)
         if current is None:
             raise KeyError("Profile not found")
-        return self._row(self.store.update_profile(profile_id, self._normalize(payload or {}, current)))
+        data = self._normalize(payload or {}, current)
+        webgl = (data.get("fp_overrides") or {}).get("webgl")
+        if webgl and list(webgl) not in gpu_options(validate_os_target(data.get("os") or current.os)):
+            raise ValueError("That graphics card is not available for this operating system.")
+        return self._row(self.store.update_profile(profile_id, data))
 
     @_bridge
-    def profiles_regenerate_fingerprint(self, profile_id: str) -> Dict[str, Any]:
+    def profiles_regenerate_fingerprint(self, profile_id: str, screen: Optional[str] = None) -> Dict[str, Any]:
+        """New fingerprint; ``screen`` "WxH" pins the size, "" allows any, None keeps the current pin."""
         if self.manager.is_running(profile_id):
             raise ValueError("Stop the running browser before regenerating its fingerprint.")
-        return self._row(self.store.regenerate_fingerprint(profile_id))
+        if screen is None:
+            return self._row(self.store.regenerate_fingerprint(profile_id))
+        return self._row(self.store.regenerate_fingerprint(profile_id, screen=screen))
+
+    @_bridge
+    def fingerprint_options(self, profile_os: str) -> Dict[str, Any]:
+        os_key = validate_os_target(profile_os)
+        return {
+            "gpus": gpu_options(os_key),
+            "screens": SCREEN_PRESETS[os_key],
+            "geoip_installed": bool(geoip_db.status().get("installed")),
+        }
 
     @_bridge
     def profiles_delete(self, profile_id: str) -> Dict[str, Any]:

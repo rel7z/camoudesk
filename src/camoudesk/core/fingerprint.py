@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from camoufox.fingerprints import generate_fingerprint
 
@@ -46,10 +46,26 @@ def load_saved_fingerprint(profile_dir: Path) -> Dict[str, Any] | None:
 def generate_and_save_fingerprint(
     profile_dir: Path,
     os_target: str,
+    screen: Optional[Tuple[int, int]] = None,
 ) -> Tuple[Dict[str, Any], FingerprintSummary]:
-    """Generate a coherent Firefox fingerprint via fpgen and persist it to disk."""
+    """Generate a coherent Firefox fingerprint via fpgen and persist it to disk.
+
+    ``screen`` pins the generated screen to an exact (width, height); a size no recorded device
+    of that OS has raises ValueError and the saved fingerprint is left untouched.
+    """
     normalized_os = validate_os_target(os_target)
-    raw_fp = generate_fingerprint(os=normalized_os)
+    if screen:
+        from camoufox.fingerprints import Screen
+
+        w, h = screen
+        try:
+            raw_fp = generate_fingerprint(
+                os=normalized_os, screen=Screen(min_width=w, max_width=w, min_height=h, max_height=h)
+            )
+        except Exception as exc:
+            raise ValueError(f"No realistic {normalized_os} device has a {w}x{h} screen; pick another size.") from exc
+    else:
+        raw_fp = generate_fingerprint(os=normalized_os)
     # Round-trip via JSON so stored and in-memory structures match identically.
     serializable = json.loads(json.dumps(raw_fp))
     _atomic_write_json(profile_dir / FINGERPRINT_FILENAME, serializable)

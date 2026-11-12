@@ -79,6 +79,10 @@ def build_camoufox_kwargs(
     canvas_noise: bool = True,
     headless: bool = False,
     geoip: Optional[str] = None,
+    webgl_config: Optional[List[str]] = None,
+    block_images: bool = False,
+    block_webgl: bool = False,
+    firefox_user_prefs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build verified keyword arguments for Camoufox(persistent_context=True, ...)."""
     config: Dict[str, Any] = {}
@@ -101,6 +105,14 @@ def build_camoufox_kwargs(
         kwargs["locale"] = locale
     if config:
         kwargs["config"] = config
+    if webgl_config:
+        kwargs["webgl_config"] = (webgl_config[0], webgl_config[1])
+    if block_images:
+        kwargs["block_images"] = True
+    if block_webgl:
+        kwargs["block_webgl"] = True
+    if firefox_user_prefs:
+        kwargs["firefox_user_prefs"] = dict(firefox_user_prefs)
     if geoip:
         # Explicit timezone/locale above still win (Camoufox uses setdefault for those keys);
         # geoip adds coordinates and, when WebRTC is allowed, the exit IP for WebRTC.
@@ -178,6 +190,21 @@ def has_proxy_credentials(profile: Profile, proxies: Any = None) -> bool:
     return resolve_network(profile, proxies).proxy.has_credentials
 
 
+def gpu_options(profile_os: str) -> List[List[str]]:
+    """Every WebGL (vendor, renderer) Firefox has been recorded reporting on this OS."""
+    from camoufox.webgl import firefox_gpus
+
+    key = {"macos": "mac", "windows": "win", "linux": "lin"}[profile_os]
+    return [list(pair) for pair in sorted(firefox_gpus(key))]
+
+
+SCREEN_PRESETS = {
+    "macos": ["1440x900", "1470x956", "1512x982", "1680x1050", "1710x1107", "1728x1117", "1920x1080", "2560x1440"],
+    "windows": ["1366x768", "1440x900", "1536x864", "1600x900", "1920x1080", "1920x1200", "2560x1440", "3840x2160"],
+    "linux": ["1366x768", "1600x900", "1920x1080", "1920x1200", "2560x1440"],
+}
+
+
 def resolve_geoip(profile: Profile, network: Optional[Network] = None) -> Optional[str]:
     """Return the proxy exit IP when the optional camoufox[geoip] database can locate it."""
     net = network or resolve_network(profile)
@@ -226,7 +253,7 @@ def build_launch_spec(
     ff_dir = kwargs.pop("user_data_dir")
     # The upstream proxy stays in kwargs so Camoufox derives the same identity as a worker launch
     # (it only inspects it, e.g. for IPv6 handling); the browser itself is routed by these prefs.
-    prefs = browser_proxy.to_firefox_prefs()
+    prefs = {**kwargs.pop("firefox_user_prefs", {}), **browser_proxy.to_firefox_prefs()}
 
     # Same pin_cpu_cores default Camoufox's own sync launcher applies.
     opts = launch_options(pin_cpu_cores=False, firefox_user_prefs=prefs or None, **kwargs)
@@ -256,6 +283,17 @@ def profile_camoufox_kwargs(
     ff_dir.mkdir(parents=True, exist_ok=True)
     saved_fp, _ = ensure_profile_fingerprint(pdir, profile.os)
     geoip = resolve_geoip(profile, network)
+    ov = profile.fp_overrides
+    # WebRTC: "spoof" reports the proxy IP, which needs GeoIP data; without it the only safe
+    # choice is to block WebRTC, never to let it reveal the real IP.
+    mode = profile.webrtc_mode
+    block_webrtc = mode == "block" or (mode == "spoof" and not geoip)
+    prefs: Dict[str, Any] = {}
+    geo_mode = ov.get("geolocation", "auto")
+    if geo_mode == "block":
+        prefs["permissions.default.geo"] = 2
+    elif geo_mode == "prompt":
+        prefs["permissions.default.geo"] = 0
     kwargs = build_camoufox_kwargs(
         profile_os=profile.os,
         user_data_dir=str(ff_dir),
@@ -263,9 +301,13 @@ def profile_camoufox_kwargs(
         proxy_url=network.proxy.raw_url if network.proxy.is_configured else "",
         timezone=network.timezone,
         locale=network.locale,
-        block_webrtc=profile.block_webrtc,
+        block_webrtc=block_webrtc,
         humanize=profile.humanize,
         headless=headless,
-        geoip=geoip,
+        geoip=geoip if geo_mode == "auto" or mode == "spoof" else None,
+        webgl_config=ov.get("webgl"),
+        block_images=bool(ov.get("block_images")),
+        block_webgl=bool(ov.get("block_webgl")),
+        firefox_user_prefs=prefs,
     )
     return kwargs, geoip

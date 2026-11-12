@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 import ipaddress
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 from camoudesk.config import DEFAULT_STARTUP_URL, SUPPORTED_OS
@@ -83,6 +83,47 @@ def clean_start_urls(value: Any, strict: bool = True) -> List[str]:
         if url not in out:
             out.append(url)
     return out[:20]
+
+
+WEBRTC_MODES = ("block", "spoof", "real")
+GEOLOCATION_MODES = ("auto", "prompt", "block")
+_SCREEN_RE = re.compile(r"^(\d{3,4})x(\d{3,4})$")
+
+
+def parse_screen(value: Any) -> Optional[Tuple[int, int]]:
+    """"1920x1080" -> (1920, 1080); None for empty/invalid or implausible sizes."""
+    m = _SCREEN_RE.match(str(value or "").strip())
+    if not m:
+        return None
+    w, h = int(m.group(1)), int(m.group(2))
+    return (w, h) if 800 <= w <= 7680 and 600 <= h <= 4320 else None
+
+
+def clean_fp_overrides(value: Any) -> Dict[str, Any]:
+    """Keep only known fingerprint override keys with valid values (unknown keys are dropped).
+
+    * webgl: [vendor, renderer] from Camoufox's recorded GPUs (validated per OS by the caller)
+    * webrtc: block | spoof (report the proxy IP; needs GeoIP) | real
+    * geolocation: auto (match proxy via GeoIP) | prompt | block
+    * screen: "WxH" the fingerprint was generated for ("" = any)
+    * block_images / block_webgl: bool
+    """
+    raw = value if isinstance(value, dict) else {}
+    out: Dict[str, Any] = {}
+    webgl = raw.get("webgl")
+    if isinstance(webgl, (list, tuple)) and len(webgl) == 2 and all(isinstance(x, str) and x.strip() for x in webgl):
+        out["webgl"] = [webgl[0].strip()[:120], webgl[1].strip()[:200]]
+    if raw.get("webrtc") in WEBRTC_MODES:
+        out["webrtc"] = raw["webrtc"]
+    if raw.get("geolocation") in GEOLOCATION_MODES:
+        out["geolocation"] = raw["geolocation"]
+    screen = parse_screen(raw.get("screen"))
+    if screen:
+        out["screen"] = f"{screen[0]}x{screen[1]}"
+    for key in ("block_images", "block_webgl"):
+        if key in raw:
+            out[key] = bool(raw[key])
+    return out
 
 
 def validate_os_target(os_target: str) -> str:
@@ -279,6 +320,11 @@ class Profile:
         self.startup_url = self.start_urls[0] if self.start_urls else ""
         return asdict(self)
 
+    @property
+    def webrtc_mode(self) -> str:
+        """block | spoof | real. Overrides win; otherwise the legacy block_webrtc flag decides."""
+        return self.fp_overrides.get("webrtc") or ("block" if self.block_webrtc else "real")
+
     def set_start_urls(self, urls: Any) -> None:
         self.start_urls = clean_start_urls(urls)
         self.startup_url = self.start_urls[0] if self.start_urls else ""
@@ -314,7 +360,7 @@ class Profile:
             notes=str(raw.get("notes") or "").strip(),
             folder=str(raw.get("folder") or "").strip()[:80],
             tags=clean_tags(raw.get("tags")),
-            fp_overrides=dict(overrides) if isinstance(overrides, dict) else {},
+            fp_overrides=clean_fp_overrides(overrides),
             fingerprint_summary=dict(raw.get("fingerprint_summary") or {}),
             created_at=str(raw.get("created_at") or time.strftime("%Y-%m-%d %H:%M")),
             last_used_at=raw.get("last_used_at"),
