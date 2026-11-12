@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CamouDesk</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-logo">🦊</div>
+      <div>
+        <h1>CamouDesk</h1>
+        <span id="app-subtitle">Open-Source Anti-Detect Browser Manager · Apple Silicon</span>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <div class="stat-pill">Profiles <strong id="stat-total">0</strong></div>
+      <div class="stat-pill">Active <strong id="stat-active" class="green">0</strong></div>
+      <button class="btn btn-primary" onclick="openCreateModal()">+ New Profile</button>
+    </div>
+  </header>
+
+  <section class="toolbar">
+    <div class="search-box">
+      <input type="text" id="search-input" placeholder="Search profiles, notes, or proxies..." oninput="renderProfiles()" />
+    </div>
+    <div class="filter-pills">
+      <button class="pill active" data-filter="all" onclick="setOsFilter('all', this)">All</button>
+      <button class="pill" data-filter="macos" onclick="setOsFilter('macos', this)">🍏 macOS</button>
+      <button class="pill" data-filter="windows" onclick="setOsFilter('windows', this)">🪟 Windows</button>
+      <button class="pill" data-filter="linux" onclick="setOsFilter('linux', this)">🐧 Linux</button>
+    </div>
+  </section>
+
+  <main>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>Profile</th>
+            <th>Emulated Hardware</th>
+            <th>Proxy / Network</th>
+            <th>Timezone</th>
+            <th style="text-align: right;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="profiles-body"></tbody>
+      </table>
+      <div id="empty-state" class="empty-state" style="display: none;">
+        No matching profiles found. Click <strong>+ New Profile</strong> to create one.
+      </div>
+    </div>
+  </main>
+
+  <!-- Create / Edit Profile Modal -->
+  <div class="modal-backdrop" id="profile-modal">
+    <div class="modal">
+      <div class="modal-head">
+        <h2 id="modal-title">Create Anti-Detect Profile</h2>
+        <button class="btn-x" onclick="closeProfileModal()">&times;</button>
+      </div>
+
+      <input type="hidden" id="edit-profile-id" />
+
+      <div class="form-grid">
+        <div class="form-group full">
+          <label for="f-name">Profile Name</label>
+          <input type="text" id="f-name" class="input" placeholder="e.g. Store Account US 01" />
+        </div>
+
+        <div class="form-group">
+          <label for="f-os">OS Fingerprint</label>
+          <select id="f-os" class="select">
+            <option value="macos">macOS (Apple Silicon)</option>
+            <option value="windows">Windows 11</option>
+            <option value="linux">Linux (Desktop)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="f-locale">Locale</label>
+          <select id="f-locale" class="select">
+            <option value="en-US">en-US (English US)</option>
+            <option value="en-GB">en-GB (English UK)</option>
+            <option value="id-ID">id-ID (Indonesia)</option>
+            <option value="ja-JP">ja-JP (Japan)</option>
+            <option value="de-DE">de-DE (Germany)</option>
+          </select>
+        </div>
+
+        <div class="form-group full">
+          <label for="f-proxy">Proxy (HTTP / HTTPS / SOCKS5 — Optional)</label>
+          <div class="inline-row">
+            <input type="text" id="f-proxy" class="input" placeholder="http://user:pass@host:port or socks5://host:port" />
+            <button type="button" class="btn btn-ghost" onclick="runProxyTest()">⚡ Test</button>
+          </div>
+          <div id="proxy-status" class="proxy-status"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="f-tz">Timezone</label>
+          <select id="f-tz" class="select">
+            <option value="Asia/Jakarta">Asia/Jakarta (WIB)</option>
+            <option value="America/New_York">America/New_York (EST)</option>
+            <option value="America/Los_Angeles">America/Los_Angeles (PST)</option>
+            <option value="America/Chicago">America/Chicago (CST)</option>
+            <option value="Europe/London">Europe/London (GMT)</option>
+            <option value="Europe/Berlin">Europe/Berlin (CET)</option>
+            <option value="Asia/Singapore">Asia/Singapore (SGT)</option>
+            <option value="Asia/Tokyo">Asia/Tokyo (JST)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="f-url">Startup URL</label>
+          <input type="text" id="f-url" class="input" value="https://browserleaks.com/canvas" />
+        </div>
+
+        <div class="form-group full">
+          <label for="f-notes">Notes (Optional)</label>
+          <input type="text" id="f-notes" class="input" placeholder="Account memo, vendor tag, etc." />
+        </div>
+
+        <div class="form-group full">
+          <label>Protection Options</label>
+          <div class="checkbox-row">
+            <label><input type="checkbox" id="f-webrtc" checked /> Block WebRTC IP Leak</label>
+            <label><input type="checkbox" id="f-humanize" checked /> Humanize Cursor Movement</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-foot">
+        <div>
+          <button type="button" id="btn-regen-fp" class="btn btn-ghost" style="display: none;" onclick="regenerateCurrentFingerprint()">
+            🎲 New Fingerprint
+          </button>
+        </div>
+        <div class="inline-row">
+          <button type="button" class="btn btn-ghost" onclick="closeProfileModal()">Cancel</button>
+          <button type="button" class="btn btn-primary" onclick="saveProfileForm()">Save Profile</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Logs Modal -->
+  <div class="modal-backdrop" id="logs-modal">
+    <div class="modal">
+      <div class="modal-head">
+        <h2 id="logs-title">Worker Logs</h2>
+        <button class="btn-x" onclick="closeLogsModal()">&times;</button>
+      </div>
+      <pre id="logs-content" class="log-pre"></pre>
+      <div class="modal-foot">
+        <span></span>
+        <button type="button" class="btn btn-ghost" onclick="closeLogsModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm Delete Modal -->
+  <div class="modal-backdrop" id="confirm-modal">
+    <div class="modal" style="width: 420px;">
+      <div class="modal-head">
+        <h2>Delete Profile?</h2>
+        <button class="btn-x" onclick="closeConfirmModal()">&times;</button>
+      </div>
+      <p id="confirm-text" style="font-size: 13px; color: var(--text-secondary); line-height: 1.5;"></p>
+      <div class="modal-foot">
+        <span></span>
+        <div class="inline-row">
+          <button type="button" class="btn btn-ghost" onclick="closeConfirmModal()">Cancel</button>
+          <button type="button" id="confirm-ok-btn" class="btn btn-stop">Delete Permanently</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

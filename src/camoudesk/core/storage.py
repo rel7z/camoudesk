@@ -1,0 +1,298 @@
+"""Atomic JSON profile registry, persistent directory layout, and legacy migration."""
+
+import json
+import os
+from pathlib import Path
+import shutil
+import tempfile
+import threading
+import time
+from typing import Any, Dict, List, Optional
+
+from camoudesk.config import (
+    DEFAULT_STARTUP_URL,
+    get_app_support_dir,
+    get_legacy_profiles_dir,
+    get_logs_dir,
+    get_profiles_dir,
+    get_registry_path,
+)
+from camoudesk.core.fingerprint import (
+    ensure_profile_fingerprint,
+    generate_and_save_fingerprint,
+    summary_dict,
+)
+from camoudesk.models.profile import (
+    Profile,
+    ProxyConfig,
+    sanitize_profile_id,
+    validate_os_target,
+)
+
+
+class ProfileStore:
+    """Thread-safe profile registry backed by atomic JSON writes and isolated folders."""
+
+    def __init__(
+        self,
+        app_dir: Optional[Path] = None,
+        legacy_dir: Optional[Path] = None,
+    ) -> None:
+        self.app_dir = (app_dir or get_app_support_dir()).resolve()
+        self.profiles_dir = (self.app_dir / "profiles") if app_dir else get_profiles_dir()
+        self.logs_dir = (self.app_dir / "logs") if app_dir else get_logs_dir()
+        self.registry_path = (self.app_dir / "registry.json") if app_dir else get_registry_path()
+        self.legacy_dir = (legacy_dir or get_legacy_profiles_dir()).resolve()
+        self._lock = threading.Lock()
+        self._initialize()
+
+    def _initialize(self) -> None:
+        self.app_dir.mkdir(parents=True, exist_ok=True)
+        self.profiles_dir.mkdir(parents=True, exist_ok=True)
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        if not self.registry_path.exists():
+            migrated = self._migrate_legacy_profiles()
+            if migrated:
+                self._write_profiles(migrated)
+            else:
+                starter = self._build_new_profile(
+                    profile_id="prof_default_1",
+                    name="Akun 1 (macOS Direct)",
+                    os_target="macos",
+                    timezone="Asia/Jakarta",
+                    locale="id-ID",
+                    startup_url=DEFAULT_STARTUP_URL,
+                )
+                self._write_profiles([starter])
+
+    def _migrate_legacy_profiles(self) -> List[Profile]:
+        """Import profiles from prototype ~/.camoufox_profiles if present."""
+        legacy_registry = self.legacy_dir / "profiles_registry.json"
+        if not legacy_registry.is_file():
+            return []
+        try:
+            with open(legacy_registry, "r", encoding="utf-8") as stream:
+                raw_list = json.load(stream)
+        except (OSError, json.JSONDecodeError):
+            return []
+
+        if not isinstance(raw_list, list):
+            return []
+
+        migrated: List[Profile] = []
+        for item in raw_list:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            try:
+                profile = Profile.from_dict(item)
+            except ValueError:
+                continue
+            pdir = self.profile_dir(profile.id)
+            pdir.mkdir(parents=True, exist_ok=True)
+            self.firefox_data_dir(profile.id).mkdir(parents=True, exist_ok=True)
+            _, summary = ensure_profile_fingerprint(pdir, profile.os)
+            profile.fingerprint_summary = summary_dict(summary)
+            migrated.append(profile)
+        return migrated
+
+    def _read_profiles(self) -> List[Profile]:
+        if not self.registry_path.is_file():
+            return []
+        try:
+            with open(self.registry_path, "r", encoding="utf-8") as stream:
+                raw = json.load(stream)
+        except (OSError, json.JSONDecodeError):
+            return []
+        if not isinstance(raw, list):
+            return []
+
+        profiles: List[Profile] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                profiles.append(Profile.from_dict(entry))
+            except ValueError:
+                continue
+        return profiles
+
+    def _write_profiles(self, profiles: List[Profile]) -> None:
+        self.registry_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = [p.to_dict() for p in profiles]
+        fd, tmp_name = tempfile.mkstemp(prefix=".registry-", dir=str(self.registry_path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(payload, stream, indent=2)
+            os.replace(tmp_name, self.registry_path)
+        except BaseException:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+            raise
+
+    def profile_dir(self, profile_id: str) -> Path:
+        safe_id = sanitize_profile_id(profile_id)
+        target = (self.profiles_dir / safe_id).resolve()
+        if target.parent != self.profiles_dir.resolve():
+            raise ValueError("Resolved profile directory escapes profiles root")
+        return target
+
+    def firefox_data_dir(self, profile_id: str) -> Path:
+        return self.profile_dir(profile_id) / "firefox_data"
+
+    def log_file(self, profile_id: str) -> Path:
+        safe_id = sanitize_profile_id(profile_id)
+        return (self.logs_dir / f"{safe_id}.log").resolve()
+
+    def _build_new_profile(
+        self,
+        profile_id: str,
+        name: str,
+        os_target: str = "macos",
+        proxy: str = "",
+        timezone: str = "America/New_York",
+        locale: str = "en-US",
+        startup_url: str = DEFAULT_STARTUP_URL,
+        block_webrtc: bool = True,
+        humanize: bool = True,
+        notes: str = "",
+        tags: Optional[List[str]] = None,
+    ) -> Profile:
+        safe_id = sanitize_profile_id(profile_id)
+        norm_os = validate_os_target(os_target)
+        norm_proxy = ProxyConfig.from_url(proxy).raw_url if proxy.strip() else ""
+
+        pdir = self.profile_dir(safe_id)
+        pdir.mkdir(parents=True, exist_ok=True)
+        self.firefox_data_dir(safe_id).mkdir(parents=True, exist_ok=True)
+        _, summary = ensure_profile_fingerprint(pdir, norm_os)
+
+        return Profile(
+            id=safe_id,
+            name=name.strip() or safe_id,
+            os=norm_os,
+            proxy=norm_proxy,
+            timezone=(timezone or "America/New_York").strip(),
+            locale=(locale or "en-US").strip(),
+            startup_url=(startup_url or DEFAULT_STARTUP_URL).strip(),
+            block_webrtc=bool(block_webrtc),
+            humanize=bool(humanize),
+            notes=(notes or "").strip(),
+            tags=[str(t).strip() for t in (tags or []) if str(t).strip()],
+            fingerprint_summary=summary_dict(summary),
+        )
+
+    def list_profiles(self) -> List[Profile]:
+        with self._lock:
+            return self._read_profiles()
+
+    def get_profile(self, profile_id: str) -> Optional[Profile]:
+        safe_id = sanitize_profile_id(profile_id)
+        with self._lock:
+            for profile in self._read_profiles():
+                if profile.id == safe_id:
+                    return profile
+        return None
+
+    def create_profile(self, data: Dict[str, Any]) -> Profile:
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise ValueError("Profile name is required")
+        profile_id = f"prof_{int(time.time())}_{os.urandom(2).hex()}"
+        profile = self._build_new_profile(
+            profile_id=profile_id,
+            name=name,
+            os_target=str(data.get("os") or "macos"),
+            proxy=str(data.get("proxy") or ""),
+            timezone=str(data.get("timezone") or "America/New_York"),
+            locale=str(data.get("locale") or "en-US"),
+            startup_url=str(data.get("startup_url") or data.get("target_url") or DEFAULT_STARTUP_URL),
+            block_webrtc=bool(data.get("block_webrtc", True)),
+            humanize=bool(data.get("humanize", True)),
+            notes=str(data.get("notes") or ""),
+            tags=data.get("tags") if isinstance(data.get("tags"), list) else [],
+        )
+        with self._lock:
+            profiles = self._read_profiles()
+            profiles.insert(0, profile)
+            self._write_profiles(profiles)
+        return profile
+
+    def update_profile(self, profile_id: str, updates: Dict[str, Any]) -> Profile:
+        safe_id = sanitize_profile_id(profile_id)
+        with self._lock:
+            profiles = self._read_profiles()
+            target = next((p for p in profiles if p.id == safe_id), None)
+            if target is None:
+                raise KeyError(f"Profile '{safe_id}' not found")
+
+            if "name" in updates:
+                new_name = str(updates["name"] or "").strip()
+                if not new_name:
+                    raise ValueError("Profile name cannot be empty")
+                target.name = new_name
+            if "proxy" in updates:
+                raw_proxy = str(updates["proxy"] or "").strip()
+                target.proxy = ProxyConfig.from_url(raw_proxy).raw_url if raw_proxy else ""
+            if "timezone" in updates:
+                target.timezone = str(updates["timezone"] or "America/New_York").strip()
+            if "locale" in updates:
+                target.locale = str(updates["locale"] or "en-US").strip()
+            if "startup_url" in updates or "target_url" in updates:
+                url_val = updates.get("startup_url") or updates.get("target_url") or DEFAULT_STARTUP_URL
+                target.startup_url = str(url_val).strip()
+            if "block_webrtc" in updates:
+                target.block_webrtc = bool(updates["block_webrtc"])
+            if "humanize" in updates:
+                target.humanize = bool(updates["humanize"])
+            if "notes" in updates:
+                target.notes = str(updates["notes"] or "").strip()
+            if "os" in updates:
+                new_os = validate_os_target(str(updates["os"]))
+                if new_os != target.os:
+                    target.os = new_os
+                    _, summary = generate_and_save_fingerprint(self.profile_dir(safe_id), new_os)
+                    target.fingerprint_summary = summary_dict(summary)
+
+            self._write_profiles(profiles)
+            return target
+
+    def regenerate_fingerprint(self, profile_id: str) -> Profile:
+        safe_id = sanitize_profile_id(profile_id)
+        with self._lock:
+            profiles = self._read_profiles()
+            target = next((p for p in profiles if p.id == safe_id), None)
+            if target is None:
+                raise KeyError(f"Profile '{safe_id}' not found")
+            pdir = self.profile_dir(safe_id)
+            pdir.mkdir(parents=True, exist_ok=True)
+            _, summary = generate_and_save_fingerprint(pdir, target.os)
+            target.fingerprint_summary = summary_dict(summary)
+            self._write_profiles(profiles)
+            return target
+
+    def mark_used(self, profile_id: str) -> None:
+        safe_id = sanitize_profile_id(profile_id)
+        with self._lock:
+            profiles = self._read_profiles()
+            target = next((p for p in profiles if p.id == safe_id), None)
+            if target is not None:
+                target.last_used_at = time.strftime("%Y-%m-%d %H:%M")
+                self._write_profiles(profiles)
+
+    def delete_profile(self, profile_id: str, wipe_data: bool = True) -> bool:
+        safe_id = sanitize_profile_id(profile_id)
+        with self._lock:
+            profiles = self._read_profiles()
+            remaining = [p for p in profiles if p.id != safe_id]
+            if len(remaining) == len(profiles):
+                return False
+            self._write_profiles(remaining)
+
+        if wipe_data:
+            pdir = self.profile_dir(safe_id)
+            if pdir.exists():
+                shutil.rmtree(pdir, ignore_errors=True)
+            lfile = self.log_file(safe_id)
+            if lfile.exists():
+                lfile.unlink(missing_ok=True)
+        return True
