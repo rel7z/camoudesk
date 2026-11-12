@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 APP_PATH="$REPO_DIR/dist/CamouDesk.app"
-DMG_PATH="$REPO_DIR/dist/CamouDesk-0.1.0-arm64.dmg"
+DMG_PATH="$REPO_DIR/dist/CamouDesk-0.2.0-arm64.dmg"
 
 if [[ ! -d "$APP_PATH" ]]; then
   bash "$SCRIPT_DIR/build_app.sh" --no-install

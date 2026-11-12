@@ -1,24 +1,43 @@
-# 🦊 CamouDesk
+# CamouDesk
 
-An open-source macOS anti-detect profile manager powered by **Camoufox** and **PyWebView**. Designed as a clean, privacy-respecting desktop alternative for managing isolated browser identities and residential proxies on Apple Silicon (`arm64`).
+An open-source macOS anti-detect browser profile manager powered by **Camoufox** (a hardened Firefox) and **PyWebView**. Manage isolated browser identities, proxies and cookies on Apple Silicon (`arm64`), with everything stored locally on your Mac.
 
-## Architecture
+## Features
 
-- **`camoudesk.models`**: Strict profile/proxy schema validation (`http`, `https`, `socks5`), masked credential views, and directory traversal guards.
-- **`camoudesk.core.fingerprint`**: Generates coherent Firefox hardware fingerprints once per profile via `fpgen` and freezes them in `fingerprint.json` so accounts retain stable device identities across restarts.
-- **`camoudesk.core.storage`**: Atomic JSON registry (`~/Library/Application Support/CamouDesk/registry.json`) with isolated per-profile `firefox_data/` directories (`persistent_context=True`).
-- **`camoudesk.core.launcher`**: Computes each profile's Camoufox identity in-process and starts the browser binary directly (no Playwright driver or Python worker per profile), about 3x faster to first page.
-- **`camoudesk.core.proxy_forwarder`**: Loopback forwarder that answers HTTP/SOCKS5 proxy authentication for directly launched browsers, so credentials never reach Firefox.
-- **`camoudesk.core.browser_worker`**: Playwright-based persistent worker, used for headless/automation runs.
-- **`camoudesk.manager.process_manager`**: Chooses the launch mode, re-adopts running browsers after a GUI restart (`run.json`), captures per-profile logs, and stops browsers gracefully (Cmd+Q-style quit before signals) so cookies are flushed.
-- **`camoudesk.ui`**: Offline dark-mode desktop UI served inside a native macOS Cocoa/WebKit window via a compiled Mach-O `.app` launcher (`CamouDesk.app`).
+- **Profiles**: each profile is a separate browser with its own fingerprint, cookies, storage and network. Folders, coloured tags, search and filters, bulk start/stop/assign proxy/move/tag/export, trash with restore, clone (new fingerprint) or duplicate (same device and cookies).
+- **Proxies**: HTTP, HTTPS, SOCKS4 and SOCKS5, with or without credentials. Save proxies once and reuse them; bulk import provider lists (`host:port:user:pass`, `user:pass@host:port`, ...); check all with exit IP, location and latency; rotate IP via a provider's change-IP URL.
+- **Network matching**: "Auto" timezone and language follow the proxy's exit location (or your Mac when there is no proxy). With the optional GeoIP database, geolocation and WebRTC match the proxy IP too.
+- **Fingerprints**: a realistic, consistent identity per profile that stays the same on every launch. Pick the screen size and graphics card (only devices Firefox has really been seen on), WebRTC mode, geolocation behaviour, image and WebGL blocking.
+- **Cookies**: import (browser-extension JSON, Playwright, Netscape `cookies.txt`), export, clear.
+- **Portable profiles**: export to `.camoudesk` files and import on another Mac (proxy passwords excluded unless you choose otherwise).
+- **Automation**: a token-protected local REST API and a Python SDK for Playwright scripts.
 
 ## Quick Start (Development)
 
 ```bash
 pip install -e ".[dev]"
 camoufox fetch
-python -m camoudesk.ui.app
+camoudesk-gui
+```
+
+## Automation
+
+Enable the REST API in **Settings → Automation** to get a token, then:
+
+```bash
+curl -H "Authorization: Bearer <token>" http://127.0.0.1:35120/v1/profiles
+```
+
+Endpoints: `GET /v1/health`, `GET|POST /v1/profiles`, `GET|PATCH /v1/profiles/{id}`, `POST /v1/profiles/{id}/start` (`{"headless": true}`), `POST /v1/profiles/{id}/stop`, `GET /v1/profiles/{id}/status`, `GET /v1/proxies`, `POST /v1/proxies/{id}/check`. The API only listens on 127.0.0.1.
+
+For full browser automation, use the SDK from your own script (the profile appears as running in the app):
+
+```python
+from camoudesk.sdk import open_profile
+
+with open_profile("PROFILE_ID") as context:
+    page = context.new_page()
+    page.goto("https://example.com")
 ```
 
 ## Build macOS `.app` Bundle
@@ -40,5 +59,14 @@ bash macos/build_dmg.sh
 ## Run Tests
 
 ```bash
-pytest tests/ -v
+pytest tests/ -v -m "not live_browser"   # fast, offline
+pytest tests/ -v                         # adds live headless Camoufox tests
 ```
+
+## UI development
+
+```bash
+python scripts/dev_server.py
+```
+
+Then open `http://127.0.0.1:5178/index.html?mock` to work on the interface with fake data.
