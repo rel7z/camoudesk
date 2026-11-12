@@ -174,6 +174,34 @@ export async function renameFolder(old) {
   await refreshProfiles();
 }
 
+export async function exportProfiles(ids, withPasswords) {
+  try {
+    if (ids.length === 1) {
+      const res = await call("profiles_export", ids[0], withPasswords);
+      if (res.saved) toast(`Exported to ${res.path} (${(res.bytes / 1048576).toFixed(1)} MB)`, "success", 7000);
+    } else {
+      const res = await call("profiles_export_many", ids, withPasswords);
+      if (!res.cancelled) toast(`Exported ${plural(res.saved, "profile")} to ${res.folder}${res.errors.length ? ` — ${res.errors.join("; ")}` : ""}`, res.errors.length ? "error" : "success", 8000);
+    }
+  } catch (err) {
+    toast(err.message, "error", 7000);
+  }
+}
+
+export async function importProfiles() {
+  try {
+    const res = await call("profiles_import");
+    if (res.cancelled) return;
+    if (res.imported) {
+      toast(`Imported ${res.names.join(", ")}${res.needs_proxy_password ? ". Re-enter the proxy password in the Network tab." : ""}`, "success", 9000);
+    }
+    if (res.errors.length) toast(res.errors.join("; "), "error", 9000);
+  } catch (err) {
+    toast(err.message, "error", 7000);
+  }
+  await Promise.all([refreshProfiles(), refreshProxies()]);
+}
+
 export async function bulk(ids, fn) {
   for (const id of ids) await fn(id);
 }

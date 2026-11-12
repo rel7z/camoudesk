@@ -536,3 +536,13 @@ class ProfileStore:
             entries.insert(0, profile)
             self._write_entries(entries)
         return profile
+
+    def insert_profile(self, profile: Profile) -> Profile:
+        """Register an already-built profile (e.g. an imported archive) at the top of the list."""
+        with self._locked():
+            entries = self._read_entries()
+            if self._find(entries, profile.id) is not None:
+                raise ValueError(f"Profile '{profile.id}' already exists")
+            entries.insert(0, profile)
+            self._write_entries(entries)
+        return profile

@@ -1,7 +1,7 @@
 // Profiles page: toolbar, sortable/filterable table with selection, bulk bar.
 import { html, useMemo, useRef } from "../vendor/preact-htm.module.js";
 import { call } from "../lib/api.js";
-import { addTagPrompt, bulk, bulkMeta, cloneProfile, deleteProfiles, launchProfile, moveToNewFolder, openDrawer, refreshProfiles, stopProfile } from "../lib/actions.js";
+import { addTagPrompt, bulk, bulkMeta, cloneProfile, deleteProfiles, exportProfiles, importProfiles, launchProfile, moveToNewFolder, openDrawer, refreshProfiles, stopProfile } from "../lib/actions.js";
 import { setState, toast, useStore } from "../lib/store.js";
 import { OS_LABELS, copyText, relativeTime, sortProfiles, tagStyle } from "../lib/util.js";
 import { Icon } from "./icons.js";
@@ -95,6 +95,8 @@ function Row({ p, selected, pending }) {
         "-",
         { icon: "copy", label: "Clone settings (new fingerprint)", onClick: () => cloneProfile(p, false) },
         { icon: "copy", label: "Duplicate (same device & cookies)", disabled: live, onClick: () => cloneProfile(p, true) },
+        { icon: "download", label: "Export…", disabled: live, onClick: () => exportProfiles([p.id], false) },
+        { icon: "download", label: "Export with proxy password…", disabled: live, onClick: () => exportProfiles([p.id], true) },
         "-",
         { icon: "trash", label: "Move to trash", danger: true, onClick: () => deleteProfiles([p.id]) },
       ]} />
@@ -160,6 +162,12 @@ function BulkBar({ ids, profiles }) {
     <${AssignProxy} ids=${stopped.map((p) => p.id)} />
     <${FolderMenu} ids=${ids} profiles=${profiles} />
     <${TagMenu} ids=${ids} profiles=${profiles} />
+    <${Menu} up title="Export stopped profiles to a folder"
+      trigger=${(toggle) => html`<${Button} size="sm" icon="download" disabled=${!stopped.length} onClick=${toggle}>Export<//>`}
+      items=${[
+        { icon: "download", label: `Export ${stopped.length}…`, onClick: () => exportProfiles(stopped.map((p) => p.id), false) },
+        { icon: "download", label: "Export with proxy passwords…", onClick: () => exportProfiles(stopped.map((p) => p.id), true) },
+      ]} />
     <${Button} size="sm" kind="danger-ghost" icon="trash" onClick=${() => deleteProfiles(ids)}>Trash<//>
     <${IconButton} icon="x" title="Clear selection" onClick=${() => setState({ selection: new Set() })} />
   </div>`;
@@ -191,7 +199,10 @@ export function ProfilesView() {
         <h1>${filters.folder === "all" ? "Profiles" : filters.folder || "No folder"}</h1>
         <p class="muted">${filters.folder === "all" ? "Isolated browser identities, each with its own fingerprint, cookies and network." : `${filtered.length} profile${filtered.length === 1 ? "" : "s"} in this folder`}</p>
       </div>
-      <${Button} kind="primary" icon="plus" onClick=${() => openDrawer(null)} title="New profile (⌘N)">New profile<//>
+      <div class="inline">
+        <${Button} icon="upload" onClick=${importProfiles} title="Import .camoudesk profile files">Import<//>
+        <${Button} kind="primary" icon="plus" onClick=${() => openDrawer(null)} title="New profile (⌘N)">New profile<//>
+      </div>
     </header>
     <${Toolbar} profiles=${profiles} filtered=${filtered} />
     <div class="table-card">

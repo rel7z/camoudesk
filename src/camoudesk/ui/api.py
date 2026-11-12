@@ -9,6 +9,7 @@ and an empty password in an update means "keep the stored one".
 from concurrent.futures import ThreadPoolExecutor
 import functools
 import os
+from pathlib import Path
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
@@ -17,6 +18,7 @@ from urllib.parse import quote, unquote
 from camoudesk import __version__
 from camoudesk.core import cookies as cookies_mod
 from camoudesk.core import geoip_db
+from camoudesk.core import profile_archive
 from camoudesk.core.geo import locale_for_country
 from camoudesk.core.launcher import SCREEN_PRESETS, gpu_options, resolve_network
 from camoudesk.core.proxy import check_proxy_config
@@ -132,10 +134,12 @@ class DesktopBridgeApi:
         window = getattr(self, "_window", None)
         if window is None:
             raise RuntimeError("File dialogs are only available in the desktop app")
-        dialog_type = {"open": webview.FileDialog.OPEN, "save": webview.FileDialog.SAVE}[kind]
+        dialog_type = {"open": webview.FileDialog.OPEN, "save": webview.FileDialog.SAVE, "folder": webview.FileDialog.FOLDER}[kind]
         result = window.create_file_dialog(dialog_type, **kwargs)
         if not result:
             return None
+        if kwargs.get("allow_multiple"):
+            return list(result)  # type: ignore[return-value]
         return result if isinstance(result, str) else result[0]
 
     def set_proxy_notifier(self, callback: Callable[[], None]) -> None:
@@ -564,6 +568,74 @@ class DesktopBridgeApi:
             raise ValueError("Stop the profile before clearing cookies.")
         self.manager.clear_cookies(profile_id)
         return {"cleared": True}
+
+    # ------------------------------------------------------------------ export / import
+
+    @staticmethod
+    def _archive_name(profile: Profile) -> str:
+        safe = "".join(ch if ch.isalnum() or ch in "-_ " else "_" for ch in profile.name).strip()[:50] or profile.id
+        return f"{safe}{profile_archive.SUFFIX}"
+
+    def _export_one(self, profile_id: str, dest: Path, include_credentials: bool) -> Dict[str, Any]:
+        if self.manager.is_running(profile_id):
+            raise ValueError("Stop the profile before exporting it.")
+        return profile_archive.export_profile(self.store, self.proxies, profile_id, dest, include_credentials)
+
+    @_bridge
+    def profiles_export(self, profile_id: str, include_credentials: bool = False) -> Dict[str, Any]:
+        profile = self.store.get_profile(profile_id)
+        if profile is None:
+            raise KeyError("Profile not found")
+        path = self._dialog("save", save_filename=self._archive_name(profile))
+        if not path:
+            return {"saved": False}
+        res = self._export_one(profile_id, Path(path), bool(include_credentials))
+        return {"saved": True, **res}
+
+    @_bridge
+    def profiles_export_many(self, profile_ids: List[str], include_credentials: bool = False) -> Dict[str, Any]:
+        folder = self._dialog("folder")
+        if not folder:
+            return {"saved": 0, "cancelled": True}
+        saved, errors = 0, []
+        for pid in profile_ids or []:
+            profile = self.store.get_profile(pid)
+            if profile is None:
+                continue
+            dest = Path(folder) / self._archive_name(profile)
+            if dest.exists():
+                dest = dest.with_name(f"{dest.stem}-{profile.id[-4:]}{profile_archive.SUFFIX}")
+            try:
+                self._export_one(pid, dest, bool(include_credentials))
+                saved += 1
+            except (ValueError, OSError) as exc:
+                errors.append(f"{profile.name}: {exc}")
+        return {"saved": saved, "folder": folder, "errors": errors}
+
+    def _import_paths(self, paths: List[str]) -> Dict[str, Any]:
+        imported, errors, needs_password = [], [], 0
+        for path in paths:
+            try:
+                manifest = profile_archive.read_manifest(Path(path))
+                prof = profile_archive.import_profile(self.store, self.proxies, Path(path))
+                imported.append(prof.name)
+                has_proxy = manifest["profile"].get("proxy") or manifest.get("saved_proxy")
+                if has_proxy and not manifest.get("includes_credentials"):
+                    needs_password += 1
+            except (ValueError, KeyError, OSError) as exc:
+                errors.append(f"{os.path.basename(path)}: {exc}")
+        return {"imported": len(imported), "names": imported, "errors": errors, "needs_proxy_password": needs_password}
+
+    @_bridge
+    def profiles_import(self) -> Dict[str, Any]:
+        paths = self._dialog("open", allow_multiple=True, file_types=("CamouDesk profiles (*.camoudesk)", "All files (*.*)"))
+        if not paths:
+            return {"imported": 0, "cancelled": True}
+        return self._import_paths(paths if isinstance(paths, list) else [paths])
+
+    @_bridge
+    def profiles_import_path(self, path: str) -> Dict[str, Any]:
+        return self._import_paths([str(path)])
 
     # ------------------------------------------------------------------ settings
 
