@@ -27,7 +27,11 @@ from camoudesk.core.fingerprint import (
 from camoudesk.models.profile import (
     Profile,
     ProxyConfig,
+    clean_start_urls,
+    clean_tags,
+    normalize_country,
     normalize_ip,
+    safe_ref,
     sanitize_profile_id,
     validate_os_target,
 )
@@ -179,6 +183,22 @@ class ProfileStore:
             raise
 
     @staticmethod
+    def _apply_inline_check(profile: Profile, check: Dict[str, Any]) -> None:
+        """Cache the inline proxy's exit IP/timezone/country for "auto" timezone, locale and geoip."""
+        profile.proxy_exit_ip = normalize_ip(check.get("ip"))
+        profile.proxy_timezone = str(check.get("timezone") or "").strip()[:64]
+        profile.proxy_country = normalize_country(check.get("country_code"))
+
+    def record_inline_check(self, profile_id: str, check: Dict[str, Any]) -> None:
+        safe_id = sanitize_profile_id(profile_id)
+        with self._locked():
+            entries = self._read_entries()
+            target = self._find(entries, safe_id)
+            if target is not None and target.proxy:
+                self._apply_inline_check(target, check)
+                self._write_entries(entries)
+
+    @staticmethod
     def _find(entries: List[_Entry], safe_id: str) -> Optional[Profile]:
         return next((e for e in entries if isinstance(e, Profile) and e.id == safe_id), None)
 
@@ -214,6 +234,10 @@ class ProfileStore:
         notes: str = "",
         tags: Optional[List[str]] = None,
         proxy_exit_ip: str = "",
+        start_urls: Optional[List[str]] = None,
+        folder: str = "",
+        proxy_id: str = "",
+        fp_overrides: Optional[Dict[str, Any]] = None,
     ) -> Profile:
         safe_id = sanitize_profile_id(profile_id)
         norm_os = validate_os_target(os_target)
@@ -223,6 +247,7 @@ class ProfileStore:
         pdir.mkdir(parents=True, exist_ok=True)
         self.firefox_data_dir(safe_id).mkdir(parents=True, exist_ok=True)
         _, summary = ensure_profile_fingerprint(pdir, norm_os)
+        urls = clean_start_urls(start_urls if start_urls else [startup_url or DEFAULT_STARTUP_URL])
 
         return Profile(
             id=safe_id,
@@ -232,11 +257,15 @@ class ProfileStore:
             proxy_exit_ip=normalize_ip(proxy_exit_ip) if norm_proxy else "",
             timezone=(timezone or "auto").strip(),
             locale=(locale or "auto").strip(),
-            startup_url=(startup_url or DEFAULT_STARTUP_URL).strip(),
+            startup_url=urls[0] if urls else "",
+            start_urls=urls,
             block_webrtc=bool(block_webrtc),
             humanize=bool(humanize),
             notes=(notes or "").strip(),
-            tags=[str(t).strip() for t in (tags or []) if str(t).strip()],
+            folder=(folder or "").strip()[:80],
+            tags=clean_tags(tags or []),
+            proxy_id=safe_ref(proxy_id),
+            fp_overrides=dict(fp_overrides or {}),
             fingerprint_summary=summary_dict(summary),
         )
 
@@ -267,7 +296,13 @@ class ProfileStore:
             notes=str(data.get("notes") or ""),
             tags=data.get("tags") if isinstance(data.get("tags"), list) else [],
             proxy_exit_ip=str(data.get("proxy_exit_ip") or ""),
+            start_urls=data.get("start_urls") if isinstance(data.get("start_urls"), list) else None,
+            folder=str(data.get("folder") or ""),
+            proxy_id=str(data.get("proxy_id") or ""),
+            fp_overrides=data.get("fp_overrides") if isinstance(data.get("fp_overrides"), dict) else None,
         )
+        if isinstance(data.get("proxy_check"), dict) and profile.proxy:
+            self._apply_inline_check(profile, data["proxy_check"])
         with self._locked():
             entries = self._read_entries()
             entries.insert(0, profile)
@@ -291,18 +326,30 @@ class ProfileStore:
                 raw_proxy = str(updates["proxy"] or "").strip()
                 new_proxy = ProxyConfig.from_url(raw_proxy).raw_url if raw_proxy else ""
                 if new_proxy != target.proxy:
-                    # A cached exit IP belongs to the old proxy; never geo-match against it.
-                    target.proxy_exit_ip = ""
+                    # Cached exit data belongs to the old proxy; never geo-match against it.
+                    target.proxy_exit_ip = target.proxy_timezone = target.proxy_country = ""
                 target.proxy = new_proxy
             if "proxy_exit_ip" in updates:
                 target.proxy_exit_ip = normalize_ip(updates["proxy_exit_ip"]) if target.proxy else ""
+            if isinstance(updates.get("proxy_check"), dict) and target.proxy:
+                self._apply_inline_check(target, updates["proxy_check"])
+            if "proxy_id" in updates:
+                target.proxy_id = safe_ref(updates["proxy_id"])
+            if "start_urls" in updates:
+                target.set_start_urls(updates["start_urls"])
+            if "folder" in updates:
+                target.folder = str(updates["folder"] or "").strip()[:80]
+            if "tags" in updates:
+                target.tags = clean_tags(updates["tags"])
+            if "fp_overrides" in updates and isinstance(updates["fp_overrides"], dict):
+                target.fp_overrides = dict(updates["fp_overrides"])
             if "timezone" in updates:
                 target.timezone = str(updates["timezone"] or "auto").strip()
             if "locale" in updates:
                 target.locale = str(updates["locale"] or "auto").strip()
-            if "startup_url" in updates or "target_url" in updates:
+            if ("startup_url" in updates or "target_url" in updates) and "start_urls" not in updates:
                 url_val = updates.get("startup_url") or updates.get("target_url") or DEFAULT_STARTUP_URL
-                target.startup_url = str(url_val).strip()
+                target.set_start_urls([url_val] + target.start_urls[1:])
             if "block_webrtc" in updates:
                 target.block_webrtc = bool(updates["block_webrtc"])
             if "humanize" in updates:

@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "camoufox>=0.5.9",
+    "camoufox[geoip]>=0.5.9",
     "playwright>=1.62.0",
     "pywebview>=6.2.1",
 ]

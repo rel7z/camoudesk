@@ -7,7 +7,12 @@ import requests
 
 from camoudesk.models.profile import ProxyConfig
 
-DEFAULT_PROXY_PROBE_URL = "http://ip-api.com/json/?fields=status,country,city,timezone,query"
+DEFAULT_PROXY_PROBE_URL = "http://ip-api.com/json/?fields=status,country,countryCode,city,timezone,query"
+
+
+def check_proxy_config(cfg: ProxyConfig, **kwargs: Any) -> Dict[str, Any]:
+    """check_proxy_health for an already-parsed proxy (saved proxies, resolved profile networks)."""
+    return check_proxy_health(cfg.raw_url, **kwargs)
 
 
 def check_proxy_health(
@@ -46,11 +51,14 @@ def check_proxy_health(
         if getattr(resp, "status_code", 200) >= 400:
             return {"ok": False, "error": f"Proxy probe returned HTTP {resp.status_code}"}
         payload = resp.json() if hasattr(resp, "json") else {}
+        if payload.get("status") == "fail":
+            return {"ok": False, "error": f"Exit IP lookup failed: {payload.get('message') or 'unknown error'}"}
         ip = payload.get("query") or payload.get("origin") or "Unknown"
         return {
             "ok": True,
             "ip": str(ip),
             "country": str(payload.get("country") or ""),
+            "country_code": str(payload.get("countryCode") or ""),
             "city": str(payload.get("city") or ""),
             "timezone": str(payload.get("timezone") or ""),
             "latency_ms": latency_ms,

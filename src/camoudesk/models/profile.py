@@ -4,8 +4,8 @@ from dataclasses import asdict, dataclass, field
 import ipaddress
 import re
 import time
-from typing import Any, Dict, Optional
-from urllib.parse import urlsplit, urlunsplit
+from typing import Any, Dict, List, Optional
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from camoudesk.config import DEFAULT_STARTUP_URL, SUPPORTED_OS
 
@@ -26,6 +26,63 @@ def normalize_ip(value: Any) -> str:
         return str(ipaddress.ip_address(str(value or "").strip()))
     except ValueError:
         return ""
+
+
+def safe_ref(value: Any) -> str:
+    """A reference to another record's id, or "" when absent/invalid (never raises)."""
+    text = str(value or "").strip()
+    return text if _SAFE_ID_RE.fullmatch(text) else ""
+
+
+def normalize_country(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    return text if re.fullmatch(r"[A-Z]{2}", text) else ""
+
+
+def clean_tags(value: Any) -> List[str]:
+    seen: List[str] = []
+    for t in value if isinstance(value, list) else []:
+        tag = str(t).strip()[:40]
+        if tag and tag not in seen:
+            seen.append(tag)
+    return seen[:30]
+
+
+_URL_SCHEMES = ("http", "https")
+
+
+def clean_start_urls(value: Any, strict: bool = True) -> List[str]:
+    """Normalise start URLs: http(s) or about:, bare domains get https://, max 20.
+
+    ``javascript:``, ``data:``, ``file:`` and other schemes are rejected (strict) or dropped
+    (when reading old registries), so a profile can never auto-run script or open local files.
+    """
+    items = value if isinstance(value, list) else [value]
+    out: List[str] = []
+    for item in items:
+        url = str(item or "").strip()
+        if not url:
+            continue
+        # "javascript:x", "data:...", "mailto:" have a scheme but no "//"; "example.com:8080"
+        # is a bare host with a port (digits right after the colon).
+        scheme_match = re.match(r"^([a-zA-Z][a-zA-Z0-9+.-]*):(?!\d)", url)
+        if url.lower().startswith("about:"):
+            pass
+        elif scheme_match is None:
+            url = "https://" + url
+        else:
+            scheme = scheme_match.group(1).lower()
+            if scheme not in _URL_SCHEMES:
+                if strict:
+                    raise ValueError(f"Start URL must be http(s) or about: (got '{scheme}:')")
+                continue
+        if urlsplit(url).scheme in _URL_SCHEMES and not urlsplit(url).hostname:
+            if strict:
+                raise ValueError(f"Start URL has no host: {url}")
+            continue
+        if url not in out:
+            out.append(url)
+    return out[:20]
 
 
 def validate_os_target(os_target: str) -> str:
@@ -139,10 +196,11 @@ class ProxyConfig:
             return None
         server = f"{self.scheme}://{self.host}:{self.port}"
         cfg: Dict[str, str] = {"server": server}
+        # URL userinfo is percent-encoded; Playwright wants the literal credentials.
         if self.username:
-            cfg["username"] = self.username
+            cfg["username"] = unquote(self.username)
         if self.password:
-            cfg["password"] = self.password
+            cfg["password"] = unquote(self.password)
         return cfg
 
     def masked_display(self) -> str:
@@ -197,21 +255,33 @@ class Profile:
     id: str
     name: str
     os: str = "macos"
-    proxy: str = ""
-    proxy_exit_ip: str = ""
+    proxy: str = ""  # inline proxy URL; ignored when proxy_id names a saved proxy
+    proxy_exit_ip: str = ""  # last check of the inline proxy
+    proxy_timezone: str = ""
+    proxy_country: str = ""
+    proxy_id: str = ""  # saved proxy (ProxyStore) reference
     timezone: str = "auto"
     locale: str = "auto"
-    startup_url: str = DEFAULT_STARTUP_URL
+    startup_url: str = DEFAULT_STARTUP_URL  # first of start_urls; kept for older readers
+    start_urls: list[str] = field(default_factory=lambda: [DEFAULT_STARTUP_URL])
     block_webrtc: bool = True
     humanize: bool = True
     notes: str = ""
+    folder: str = ""
     tags: list[str] = field(default_factory=list)
+    fp_overrides: Dict[str, Any] = field(default_factory=dict)
     fingerprint_summary: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: time.strftime("%Y-%m-%d %H:%M"))
     last_used_at: Optional[str] = None
+    deleted_at: Optional[str] = None  # set while the profile is in the trash
 
     def to_dict(self) -> Dict[str, Any]:
+        self.startup_url = self.start_urls[0] if self.start_urls else ""
         return asdict(self)
+
+    def set_start_urls(self, urls: Any) -> None:
+        self.start_urls = clean_start_urls(urls)
+        self.startup_url = self.start_urls[0] if self.start_urls else ""
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "Profile":
@@ -221,20 +291,32 @@ class Profile:
         proxy_raw = str(raw.get("proxy") or "").strip()
         if proxy_raw:
             proxy_raw = ProxyConfig.from_url(proxy_raw).raw_url
+        urls = raw.get("start_urls")
+        if not isinstance(urls, list) or not urls:
+            urls = [raw.get("startup_url") or raw.get("target_url") or DEFAULT_STARTUP_URL]
+        start_urls = clean_start_urls(urls, strict=False)
+        overrides = raw.get("fp_overrides")
         return cls(
             id=profile_id,
             name=str(raw.get("name") or profile_id).strip() or profile_id,
             os=os_target,
             proxy=proxy_raw,
             proxy_exit_ip=normalize_ip(raw.get("proxy_exit_ip")) if proxy_raw else "",
+            proxy_timezone=str(raw.get("proxy_timezone") or "").strip() if proxy_raw else "",
+            proxy_country=normalize_country(raw.get("proxy_country")) if proxy_raw else "",
+            proxy_id=safe_ref(raw.get("proxy_id")),
             timezone=str(raw.get("timezone") or "auto").strip(),
             locale=str(raw.get("locale") or "auto").strip(),
-            startup_url=str(raw.get("startup_url") or raw.get("target_url") or DEFAULT_STARTUP_URL).strip(),
+            startup_url=start_urls[0] if start_urls else "",
+            start_urls=start_urls,
             block_webrtc=bool(raw.get("block_webrtc", True)),
             humanize=bool(raw.get("humanize", True)),
             notes=str(raw.get("notes") or "").strip(),
-            tags=[str(t).strip() for t in (raw.get("tags") or []) if str(t).strip()],
+            folder=str(raw.get("folder") or "").strip()[:80],
+            tags=clean_tags(raw.get("tags")),
+            fp_overrides=dict(overrides) if isinstance(overrides, dict) else {},
             fingerprint_summary=dict(raw.get("fingerprint_summary") or {}),
             created_at=str(raw.get("created_at") or time.strftime("%Y-%m-%d %H:%M")),
             last_used_at=raw.get("last_used_at"),
+            deleted_at=raw.get("deleted_at") or None,
         )

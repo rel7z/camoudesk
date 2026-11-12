@@ -8,8 +8,8 @@ from typing import Any, Optional
 
 from camoufox.sync_api import Camoufox
 
-from camoudesk.core.fingerprint import ensure_profile_fingerprint
-from camoudesk.core.launcher import build_camoufox_kwargs, resolve_geoip
+from camoudesk.core.launcher import build_camoufox_kwargs, profile_camoufox_kwargs, resolve_network
+from camoudesk.core.proxy_store import ProxyStore
 from camoudesk.core.storage import ProfileStore
 
 __all__ = ["build_camoufox_kwargs", "run_worker", "main"]
@@ -28,10 +28,10 @@ def run_worker(
         print(f"[ERROR] Profile '{profile_id}' not found.", file=sys.stderr, flush=True)
         return 2
 
-    pdir = store.profile_dir(profile.id)
-    ff_dir = store.firefox_data_dir(profile.id)
-    ff_dir.mkdir(parents=True, exist_ok=True)
-    saved_fp, _ = ensure_profile_fingerprint(pdir, profile.os)
+    network = resolve_network(profile, ProxyStore(store.app_dir))
+    if network.missing_saved_proxy:
+        print("[ERROR] This profile's saved proxy was deleted; choose another proxy or Direct.", file=sys.stderr, flush=True)
+        return 2
     store.mark_used(profile.id)
 
     stop_event = threading.Event()
@@ -44,19 +44,8 @@ def run_worker(
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
 
-    target_url = (url_override or profile.startup_url or "").strip()
-    kwargs = build_camoufox_kwargs(
-        profile_os=profile.os,
-        user_data_dir=str(ff_dir),
-        saved_fingerprint=saved_fp,
-        proxy_url=profile.proxy,
-        timezone=profile.timezone,
-        locale=profile.locale,
-        block_webrtc=profile.block_webrtc,
-        humanize=profile.humanize,
-        headless=headless,
-        geoip=resolve_geoip(profile),
-    )
+    target_urls = [url_override.strip()] if url_override and url_override.strip() else list(profile.start_urls)
+    kwargs, _geoip = profile_camoufox_kwargs(profile, store, network, headless)
 
     print(
         f"[INFO] Launching Camoufox profile={profile.id} os={profile.os} headless={headless}",
@@ -67,8 +56,8 @@ def run_worker(
         with Camoufox(**kwargs) as context:
             context.on("close", lambda *_: closed_event.set())
             pages = list(context.pages)
-            page = pages[0] if pages else context.new_page()
-            if target_url:
+            for i, target_url in enumerate(target_urls):
+                page = pages[0] if (i == 0 and pages) else context.new_page()
                 try:
                     page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
                 except Exception as nav_err:

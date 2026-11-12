@@ -113,26 +113,87 @@ def build_camoufox_kwargs(
     return kwargs
 
 
-def has_proxy_credentials(profile: Profile) -> bool:
+@dataclass(frozen=True)
+class Network:
+    """A profile's effective network identity, resolved from its saved or inline proxy."""
+
+    proxy: ProxyConfig  # what the browser routes through (may carry credentials)
+    source: str = "none"  # "none" | "saved" | "inline"
+    proxy_id: str = ""
+    exit_ip: str = ""
+    country_code: str = ""
+    timezone: str = ""  # effective timezone to spoof; "" = don't spoof (host's own)
+    locale: str = ""  # effective locale; "" = Camoufox/host default
+    needs_check: bool = False  # proxy set + auto tz/locale requested, but no exit data yet
+    missing_saved_proxy: bool = False  # proxy_id points at a deleted saved proxy
+
+
+def resolve_network(profile: Profile, proxies: Any = None) -> Network:
+    """Resolve proxy, "auto" timezone/locale and exit IP for a launch.
+
+    "auto" follows the proxy's last check (exit timezone, the country's main language); with no
+    proxy it means the host's own settings, which match the host's real IP.
+    """
+    from camoudesk.core.geo import locale_for_country
+
+    proxy, source, exit_ip, tz, cc = ProxyConfig(), "none", "", "", ""
+    if profile.proxy_id:
+        saved = proxies.get(profile.proxy_id) if proxies is not None else None
+        if saved is None:
+            return Network(proxy=ProxyConfig(), source="saved", proxy_id=profile.proxy_id, missing_saved_proxy=True)
+        proxy, source = saved.to_config(), "saved"
+        chk = saved.last_check
+        if chk.ok:
+            exit_ip, tz, cc = chk.ip, chk.timezone, chk.country_code
+    elif profile.proxy:
+        proxy, source = ProxyConfig.from_url(profile.proxy), "inline"
+        exit_ip, tz, cc = profile.proxy_exit_ip, profile.proxy_timezone, profile.proxy_country
+
+    has_proxy = proxy.is_configured
+    needs_check = False
+    if profile.timezone == AUTO:
+        timezone = tz if has_proxy else ""
+        needs_check |= has_proxy and not tz
+    else:
+        timezone = profile.timezone
+    if profile.locale == AUTO:
+        locale = (locale_for_country(cc) or "") if has_proxy else ""
+        needs_check |= has_proxy and not cc
+    else:
+        locale = profile.locale
+    return Network(
+        proxy=proxy,
+        source=source,
+        proxy_id=profile.proxy_id if source == "saved" else "",
+        exit_ip=exit_ip if has_proxy else "",
+        country_code=cc if has_proxy else "",
+        timezone=timezone,
+        locale=locale,
+        needs_check=needs_check,
+    )
+
+
+def has_proxy_credentials(profile: Profile, proxies: Any = None) -> bool:
     """Whether a direct launch needs the loopback ProxyForwarder (Firefox cannot authenticate itself)."""
-    return bool(profile.proxy) and ProxyConfig.from_url(profile.proxy).has_credentials
+    return resolve_network(profile, proxies).proxy.has_credentials
 
 
-def resolve_geoip(profile: Profile) -> Optional[str]:
-    """Return the cached proxy exit IP when the optional camoufox[geoip] database can locate it."""
-    if not profile.proxy or not profile.proxy_exit_ip:
+def resolve_geoip(profile: Profile, network: Optional[Network] = None) -> Optional[str]:
+    """Return the proxy exit IP when the optional camoufox[geoip] database can locate it."""
+    net = network or resolve_network(profile)
+    if not net.proxy.is_configured or not net.exit_ip:
         return None
     try:
         from camoufox.geolocation import geoip_allowed, get_geolocation, get_mmdb_path
 
         geoip_allowed()
-        version = "ipv6" if ipaddress.ip_address(profile.proxy_exit_ip).version == 6 else "ipv4"
+        version = "ipv6" if ipaddress.ip_address(net.exit_ip).version == 6 else "ipv4"
         if not get_mmdb_path(version).is_file():
             return None
-        get_geolocation(profile.proxy_exit_ip)
+        get_geolocation(net.exit_ip)
     except Exception:
         return None
-    return profile.proxy_exit_ip
+    return net.exit_ip
 
 
 def build_launch_spec(
@@ -141,6 +202,7 @@ def build_launch_spec(
     headless: bool = False,
     url_override: Optional[str] = None,
     local_proxy: Optional[ProxyConfig] = None,
+    network: Optional[Network] = None,
 ) -> LaunchSpec:
     """Compute the executable, arguments, and environment to start Camoufox without Playwright.
 
@@ -149,34 +211,19 @@ def build_launch_spec(
     """
     from camoufox.utils import launch_options
 
-    proxy_cfg = ProxyConfig.from_url(profile.proxy) if profile.proxy else ProxyConfig()
-    if proxy_cfg.has_credentials:
+    net = network or resolve_network(profile, _proxy_store_for(store))
+    if net.missing_saved_proxy:
+        raise ValueError("This profile's saved proxy was deleted; choose another proxy or Direct.")
+    if net.proxy.has_credentials:
         if local_proxy is None or local_proxy.has_credentials:
             raise ValueError("A proxy with credentials needs a running local forwarder for direct launch.")
         browser_proxy = local_proxy
     else:
-        browser_proxy = proxy_cfg
+        browser_proxy = net.proxy
 
-    pdir = store.profile_dir(profile.id)
-    ff_dir = store.firefox_data_dir(profile.id)
-    ff_dir.mkdir(parents=True, exist_ok=True)
-    saved_fp, _ = ensure_profile_fingerprint(pdir, profile.os)
-    geoip = resolve_geoip(profile)
-
-    kwargs = build_camoufox_kwargs(
-        profile_os=profile.os,
-        user_data_dir=str(ff_dir),
-        saved_fingerprint=saved_fp,
-        proxy_url=profile.proxy,
-        timezone=profile.timezone,
-        locale=profile.locale,
-        block_webrtc=profile.block_webrtc,
-        humanize=profile.humanize,
-        headless=headless,
-        geoip=geoip,
-    )
+    kwargs, geoip = profile_camoufox_kwargs(profile, store, net, headless)
     kwargs.pop("persistent_context", None)
-    kwargs.pop("user_data_dir", None)
+    ff_dir = kwargs.pop("user_data_dir")
     # The upstream proxy stays in kwargs so Camoufox derives the same identity as a worker launch
     # (it only inspects it, e.g. for IPv6 handling); the browser itself is routed by these prefs.
     prefs = browser_proxy.to_firefox_prefs()
@@ -187,9 +234,38 @@ def build_launch_spec(
     args = [str(a) for a in (opts.get("args") or [])]
     args += ["-profile", str(ff_dir), "-no-remote"]
     args.append("-headless" if headless else "-foreground")
-    target_url = (url_override or profile.startup_url or "").strip()
-    if target_url:
-        args.append(target_url)
+    # Each extra command-line URL opens in its own tab.
+    args += [url_override.strip()] if url_override and url_override.strip() else list(profile.start_urls)
 
     env = _browser_env(opts.get("env") or {})
     return LaunchSpec(executable=str(opts["executable_path"]), args=args, env=env, geoip=geoip)
+
+
+def _proxy_store_for(store: Any) -> Any:
+    from camoudesk.core.proxy_store import ProxyStore
+
+    return ProxyStore(store.app_dir)
+
+
+def profile_camoufox_kwargs(
+    profile: Profile, store: Any, network: Network, headless: bool
+) -> "tuple[Dict[str, Any], Optional[str]]":
+    """Camoufox(persistent_context=True, ...) kwargs for a profile; shared by both launch modes."""
+    pdir = store.profile_dir(profile.id)
+    ff_dir = store.firefox_data_dir(profile.id)
+    ff_dir.mkdir(parents=True, exist_ok=True)
+    saved_fp, _ = ensure_profile_fingerprint(pdir, profile.os)
+    geoip = resolve_geoip(profile, network)
+    kwargs = build_camoufox_kwargs(
+        profile_os=profile.os,
+        user_data_dir=str(ff_dir),
+        saved_fingerprint=saved_fp,
+        proxy_url=network.proxy.raw_url if network.proxy.is_configured else "",
+        timezone=network.timezone,
+        locale=network.locale,
+        block_webrtc=profile.block_webrtc,
+        humanize=profile.humanize,
+        headless=headless,
+        geoip=geoip,
+    )
+    return kwargs, geoip

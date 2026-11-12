@@ -27,8 +27,10 @@ import threading
 import time
 from typing import IO, Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from camoudesk.core.launcher import build_launch_spec, has_proxy_credentials, minimal_env
+from camoudesk.core.launcher import Network, build_launch_spec, minimal_env, resolve_network
+from camoudesk.core.proxy import check_proxy_config
 from camoudesk.core.proxy_forwarder import ProxyForwarder
+from camoudesk.core.proxy_store import ProxyStore
 from camoudesk.core.storage import ProfileStore, RegistryCorruptError
 from camoudesk.models.profile import Profile, ProxyConfig, sanitize_profile_id
 
@@ -134,8 +136,10 @@ class ProcessManager:
         store: ProfileStore,
         python_executable: Optional[str] = None,
         adopt_running: bool = True,
+        proxies: Optional[ProxyStore] = None,
     ) -> None:
         self.store = store
+        self.proxies = proxies or ProxyStore(store.app_dir)
         self.python_executable = python_executable or sys.executable
         self._lock = threading.Lock()
         self._runs: Dict[str, _Run] = {}
@@ -229,8 +233,8 @@ class ProcessManager:
         status = f"Browser exited with status {code}" if code is not None else "Browser exited unexpectedly"
         return (tagged[-1].strip() if tagged else status)[:300]
 
-    def _start_forwarder(self, profile: Profile, port: int = 0) -> ProxyForwarder:
-        forwarder = ProxyForwarder(ProxyConfig.from_url(profile.proxy), port=port, on_error=self._proxy_logger(profile.id))
+    def _start_forwarder(self, profile: Profile, upstream: ProxyConfig, port: int = 0) -> ProxyForwarder:
+        forwarder = ProxyForwarder(upstream, port=port, on_error=self._proxy_logger(profile.id))
         forwarder.start()
         return forwarder
 
@@ -260,11 +264,12 @@ class ProcessManager:
                 self._clear_run_record(profile.id)
                 continue
             self._runs[profile.id] = run
-            if run.forward_port and has_proxy_credentials(profile):
+            upstream = resolve_network(profile, self.proxies).proxy
+            if run.forward_port and upstream.has_credentials:
                 # The forwarder died with the previous GUI process; the browser's prefs still
                 # point at this port, so bring it back there to restore its network access.
                 try:
-                    run.forwarder = self._start_forwarder(profile, port=run.forward_port)
+                    run.forwarder = self._start_forwarder(profile, upstream, port=run.forward_port)
                 except Exception as exc:
                     self._proxy_logger(profile.id)(
                         f"Could not restart the proxy forwarder on port {run.forward_port} ({exc}); "
@@ -338,6 +343,7 @@ class ProcessManager:
         headless: bool,
         url_override: Optional[str],
         local_proxy: Optional[ProxyConfig] = None,
+        network: Optional[Network] = None,
     ) -> Tuple[List[str], Dict[str, str], str]:
         """Return (argv, env, log header) for a launch. Overridden in tests."""
         if mode == MODE_WORKER:
@@ -348,7 +354,8 @@ class ProcessManager:
                 cmd.extend(["--url", url_override])
             return cmd, _build_worker_env(), ""
         spec = build_launch_spec(
-            profile, self.store, headless=headless, url_override=url_override, local_proxy=local_proxy
+            profile, self.store, headless=headless, url_override=url_override, local_proxy=local_proxy,
+            network=network or resolve_network(profile, self.proxies),
         )
         header = (
             f"[INFO] Launching Camoufox directly profile={profile.id} os={profile.os} "
@@ -356,8 +363,10 @@ class ProcessManager:
         )
         if local_proxy is not None:
             header += f"[INFO] Proxy credentials handled by local forwarder on 127.0.0.1:{local_proxy.port}\n"
-        if profile.proxy and not spec.geoip:
-            header += "[INFO] Geolocation not matched to proxy (run 'Test proxy' and install camoufox[geoip]).\n"
+        net = network or resolve_network(profile, self.proxies)
+        header += f"[INFO] Network: proxy={net.source} timezone={net.timezone or 'host'} locale={net.locale or 'default'}\n"
+        if net.proxy.is_configured and not spec.geoip:
+            header += "[INFO] Geolocation/WebRTC not matched to the proxy IP (install the GeoIP database in Settings).\n"
         return [spec.executable, *spec.args], spec.env, header
 
     def launch(
@@ -425,7 +434,8 @@ class ProcessManager:
         if profile is None:
             lines.append("profile not found")
         else:
-            proxy = ProxyConfig.from_url(profile.proxy) if profile.proxy else ProxyConfig()
+            net = resolve_network(profile, self.proxies)
+            proxy = net.proxy
             with self._lock:
                 run = self._runs.get(safe_id)
             local = None
@@ -439,8 +449,10 @@ class ProcessManager:
                 f"proxy: {proxy.masked_display()}  type: {proxy.scheme or 'none'}  "
                 f"credentials: {'yes' if proxy.has_credentials else 'no'}",
                 f"forwarder port: {run.forward_port if run is not None and run.forward_port else '-'}",
-                f"exit ip cached: {'yes' if profile.proxy_exit_ip else 'no'}",
-                f"start urls: {profile.startup_url}",
+                f"proxy source: {net.source}{' (MISSING saved proxy)' if net.missing_saved_proxy else ''}  "
+                f"exit ip known: {'yes' if net.exit_ip else 'no'}  country: {net.country_code or '-'}",
+                f"effective timezone: {net.timezone or 'host'}  effective locale: {net.locale or 'default'}",
+                f"start urls: {', '.join(profile.start_urls) or '-'}",
                 "effective proxy prefs: " + (json.dumps(effective, sort_keys=True) if effective else "none (system/direct)"),
                 f"last error: {status.get('last_error') or '-'}",
                 f"warning: {status.get('warning') or '-'}",
@@ -449,6 +461,22 @@ class ProcessManager:
         log = re.sub(r"://([^:@/\s]+):([^@/\s]+)@", r"://\1:***@", log)
         lines += ["--- log tail ---", log]
         return "\n".join(lines)
+
+    def _check_and_resolve(self, profile: Profile, network: Network) -> Network:
+        """First launch of a proxy profile with "auto" tz/locale: learn the exit location now."""
+        result = check_proxy_config(network.proxy, timeout=8.0)
+        if result.get("ok"):
+            if network.source == "saved":
+                self.proxies.record_check(network.proxy_id, result)
+            else:
+                self.store.record_inline_check(profile.id, result)
+            fresh = self.store.get_profile(profile.id) or profile
+            return resolve_network(fresh, self.proxies)
+        self._proxy_logger(profile.id)(
+            f"Proxy check failed ({result.get('error', 'unknown error')}); timezone/locale could not be "
+            "matched to the proxy. The browser still routes only through the proxy."
+        )
+        return network
 
     def _launch_impl(
         self,
@@ -477,17 +505,23 @@ class ProcessManager:
         # forwarder diagnostics written from this process interleave instead of overwriting.
         open(log_path, "w", encoding="utf-8").close()
 
+        network = resolve_network(profile, self.proxies)
+        if network.missing_saved_proxy:
+            return {"ok": False, "error": "This profile's saved proxy was deleted; choose another proxy or Direct."}
+        if network.needs_check:
+            network = self._check_and_resolve(profile, network)
+
         forwarder: Optional[ProxyForwarder] = None
-        if chosen == MODE_DIRECT and has_proxy_credentials(profile):
+        if chosen == MODE_DIRECT and network.proxy.has_credentials:
             try:
-                forwarder = self._start_forwarder(profile)
+                forwarder = self._start_forwarder(profile, network.proxy)
             except Exception as exc:
                 return {"ok": False, "error": f"Could not start the local proxy forwarder: {exc}"}
 
         # Computing the identity can take a moment; do it outside the lock.
         try:
             argv, env, header = self._build_command(
-                profile, chosen, headless, url_override, forwarder.local_proxy if forwarder else None
+                profile, chosen, headless, url_override, forwarder.local_proxy if forwarder else None, network
             )
         except Exception as exc:
             if forwarder is not None:

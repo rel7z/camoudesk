@@ -40,6 +40,7 @@ class FakeBrowserManager(ProcessManager):
 
     def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
         self.local_proxies: List[Optional[ProxyConfig]] = []
+        self.networks: list = []
         super().__init__(*args, **kwargs)
 
     def _build_command(
@@ -49,8 +50,10 @@ class FakeBrowserManager(ProcessManager):
         headless: bool,
         url_override: Optional[str],
         local_proxy: Optional[ProxyConfig] = None,
+        network=None,  # type: ignore[no-untyped-def]
     ) -> Tuple[List[str], Dict[str, str], str]:
         self.local_proxies.append(local_proxy)
+        self.networks.append(network)
         return ["/bin/sh", "-c", self.script], dict(os.environ), f"[INFO] fake {mode}\n"
 
 
@@ -142,7 +145,7 @@ sys.path.insert(0, {str(Path(__file__).resolve().parents[1] / "src")!r})
 from camoudesk.core.storage import ProfileStore
 from camoudesk.manager.process_manager import ProcessManager
 class M(ProcessManager):
-    def _build_command(self, profile, mode, headless, url, local_proxy=None):
+    def _build_command(self, profile, mode, headless, url, local_proxy=None, network=None):
         return ["/bin/sh", "-c", "sleep 30 & sleep 30"], dict(os.environ), ""
 store = ProfileStore(app_dir=Path({str(self.root / "app")!r}), legacy_dir=Path({str(self.root / "legacy")!r}))
 print(M(store=store).launch({prof_id!r}, mode="direct")["pid"], flush=True)
@@ -337,7 +340,7 @@ sys.path.insert(0, {str(Path(__file__).resolve().parents[1] / "src")!r})
 from camoudesk.core.storage import ProfileStore
 from camoudesk.manager.process_manager import ProcessManager
 class M(ProcessManager):
-    def _build_command(self, profile, mode, headless, url, local_proxy=None):
+    def _build_command(self, profile, mode, headless, url, local_proxy=None, network=None):
         return ["/bin/sh", "-c", "sleep 30"], dict(os.environ), ""
 store = ProfileStore(app_dir=Path({str(self.root / "app")!r}), legacy_dir=Path({str(self.root / "legacy")!r}))
 res = M(store=store).launch({prof.id!r})
