@@ -125,6 +125,26 @@ class TestOverrideParityLive(StoreCase):
         self.assertEqual(cfg.get("webGl:renderer"), gpu[1])
         self.assertEqual(_decode(spec.env, "CAMOU_PREFS_").get("permissions.default.geo"), 0)
 
+    def test_window_position_is_identical_across_launches(self) -> None:
+        # A windowed fingerprint (screenX > 50, window shorter than the screen) with screenY 0:
+        # Camoufox used to redraw screenY at random per launch, so this was flaky above.
+        from camoufox.utils import launch_options
+
+        prof = self.store.create_profile({"name": "Windowed", "os": "windows", "timezone": "Europe/Madrid", "locale": "es-ES"})
+        fp_path = self.store.profile_dir(prof.id) / "fingerprint.json"
+        fp = json.loads(fp_path.read_text())
+        avail = fp["screen"]["availHeight"]
+        fp["window"].update({"screenX": 120, "screenY": 0, "outerHeight": avail - 200})
+        fp_path.write_text(json.dumps(fp))
+        net = resolve_network(prof)
+        direct = [_decode(build_launch_spec(prof, self.store, network=net).env, "CAMOU_CONFIG_") for _ in range(3)]
+        kw, _ = profile_camoufox_kwargs(prof, self.store, net, headless=False)
+        kw.pop("persistent_context")
+        worker = _decode(launch_options(pin_cpu_cores=False, **kw)["env"], "CAMOU_CONFIG_")
+        self.assertEqual({d["window.screenY"] for d in direct} | {worker["window.screenY"]}, {0})
+        for cfg in direct:
+            self.assertEqual(cfg, worker)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -74,6 +74,22 @@ class TestEnvAndDefaults(unittest.TestCase):
         kw = build_camoufox_kwargs("macos", "/tmp/ff", {}, timezone="Europe/Berlin", locale="de-DE")
         self.assertEqual((kw["config"], kw["locale"]), ({"timezone": "Europe/Berlin"}, "de-DE"))
 
+    def test_generated_screen_y_of_zero_is_kept_not_redrawn(self) -> None:
+        from camoufox.fingerprints import from_fpgen
+
+        build_camoufox_kwargs("windows", "/tmp/ff", {})  # installs the screenY fix
+        screen = {"width": 1920, "height": 1080, "availWidth": 1920, "availHeight": 1040}
+        win = {"outerWidth": 1500, "outerHeight": 800, "screenX": 146}
+        # screenY 0 used to be dropped and redrawn at random in [0, 240) on every conversion.
+        ys = {from_fpgen({"screen": screen, "window": {**win, "screenY": 0}})["window.screenY"] for _ in range(30)}
+        self.assertEqual(ys, {0})
+        # Values Camoufox already handled deterministically are unchanged.
+        self.assertEqual(from_fpgen({"screen": screen, "window": {**win, "screenY": 37}})["window.screenY"], 37)
+        near = from_fpgen({"screen": screen, "window": {**win, "screenX": 20, "screenY": 0}})
+        self.assertEqual(near["window.screenY"], 20)
+        origin = from_fpgen({"screen": screen, "window": {**win, "screenX": 0, "screenY": 0}})
+        self.assertEqual((origin["window.screenX"], origin["window.screenY"]), (0, 0))
+
     def test_socks4(self) -> None:
         cfg = ProxyConfig.from_url("socks4://10.0.0.5:1080")
         self.assertEqual(cfg.to_firefox_prefs()["network.proxy.socks_version"], 4)

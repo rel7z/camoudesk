@@ -182,6 +182,11 @@ class ProxyForwarder:
                 pass
 
     def _report(self, message: str) -> None:
+        """Pass an upstream error to ``on_error`` once per distinct message.
+
+        Handlers call this before they send the client its failure reply (the outer ``_handle``
+        repeats it as a no-op), so whoever sees that reply can rely on the error being reported.
+        """
         if self._on_error is None or message in self._reported:
             return
         self._reported.add(message)
@@ -244,6 +249,7 @@ class ProxyForwarder:
         try:
             up_reader, up_writer = await self._open_upstream(tls=self.upstream.scheme == "https")
         except UpstreamError as exc:
+            self._report(str(exc))
             writer.write(_http_error(502, "Bad Gateway", "upstream proxy unreachable"))
             await writer.drain()
             raise exc
@@ -255,9 +261,7 @@ class ProxyForwarder:
             reply = await asyncio.wait_for(up_reader.readuntil(b"\r\n\r\n"), _HANDSHAKE_TIMEOUT)
             if _status_code(reply) == 407:
                 up_writer.close()
-                writer.write(_http_error(502, "Bad Gateway", "upstream proxy rejected the credentials"))
-                await writer.drain()
-                raise UpstreamError("Upstream proxy rejected the credentials (HTTP 407)")
+                await self._reject_407(writer)
             writer.write(reply)
             await writer.drain()
             await _relay(reader, writer, up_reader, up_writer)
@@ -275,13 +279,19 @@ class ProxyForwarder:
         if _status_code(reply) == 407:
             body_task.cancel()
             up_writer.close()
-            writer.write(_http_error(502, "Bad Gateway", "upstream proxy rejected the credentials"))
-            await writer.drain()
-            raise UpstreamError("Upstream proxy rejected the credentials (HTTP 407)")
+            await self._reject_407(writer)
         writer.write(reply)
         await writer.drain()
         await _pipe(up_reader, writer)
         body_task.cancel()
+
+    async def _reject_407(self, writer: asyncio.StreamWriter) -> None:
+        """Upstream answered 407: report it, give the client a 502 instead, raise UpstreamError."""
+        message = "Upstream proxy rejected the credentials (HTTP 407)"
+        self._report(message)
+        writer.write(_http_error(502, "Bad Gateway", "upstream proxy rejected the credentials"))
+        await writer.drain()
+        raise UpstreamError(message)
 
     # ------------------------------------------------------------------ SOCKS5 upstream
 
@@ -324,7 +334,8 @@ class ProxyForwarder:
 
         try:
             up_reader, up_writer = await self._open_upstream(tls=False)
-        except UpstreamError:
+        except UpstreamError as exc:
+            self._report(str(exc))
             fail(0x01)
             await writer.drain()
             raise
@@ -360,16 +371,19 @@ class ProxyForwarder:
                 rest = await up_reader.readexactly(16 + 2)
             else:
                 raise UpstreamError("SOCKS5 upstream sent a malformed reply")
-        except UpstreamError:
+        except UpstreamError as exc:
+            self._report(str(exc))
             fail(0x02)
             await writer.drain()
             up_writer.close()
             raise
         except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError) as exc:
+            err = UpstreamError(f"SOCKS5 upstream handshake failed: {type(exc).__name__}")
+            self._report(str(err))
             fail(0x01)
             await writer.drain()
             up_writer.close()
-            raise UpstreamError(f"SOCKS5 upstream handshake failed: {type(exc).__name__}") from exc
+            raise err from exc
 
         writer.write(rhdr + rest)
         await writer.drain()

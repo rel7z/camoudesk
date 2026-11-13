@@ -68,6 +68,38 @@ class LaunchSpec:
     geoip: Optional[str] = None
 
 
+def _keep_generated_screen_y() -> None:
+    """Make Camoufox keep a fingerprint's generated ``window.screenY`` of 0 (idempotent).
+
+    Camoufox drops falsy fingerprint values, so fpgen's ``screenY: 0`` never reaches the config,
+    and ``handle_screenXY`` then treats it as missing: with ``screenX`` outside [-50, 50] and a
+    window shorter than the screen it draws an unseeded ``randrange`` on every launch (about a
+    quarter of Windows fingerprints). The window position would change between launches, and
+    direct and worker launches of the same profile would disagree. Pinning ``window.screenY``
+    through ``config`` instead would switch off Camoufox's screen/window coherence fixes, and
+    editing the fingerprint would change its identity salt (fonts, voices, noise seeds), so the
+    random branch alone is replaced with the fingerprint's own value.
+    """
+    from camoufox import fingerprints
+
+    original = getattr(fingerprints, "handle_screenXY", None)
+    if original is None or getattr(original, "_camoudesk", False):
+        return
+
+    def handle_screenXY(camoufox_data: Dict[str, Any], fingerprint: Dict[str, Any]) -> None:
+        win = fingerprint.get("window") or {}
+        scr = fingerprint.get("screen") or {}
+        x = win.get("screenX")
+        span = (scr.get("availHeight") or 0) - (win.get("outerHeight") or 0)
+        if "window.screenY" not in camoufox_data and x and x not in range(-50, 51) and span:
+            y = win.get("screenY")
+            camoufox_data["window.screenY"] = y if isinstance(y, int) and not isinstance(y, bool) else 0
+        original(camoufox_data, fingerprint)
+
+    handle_screenXY._camoudesk = True  # type: ignore[attr-defined]
+    fingerprints.handle_screenXY = handle_screenXY
+
+
 def build_camoufox_kwargs(
     profile_os: str,
     user_data_dir: str,
@@ -86,6 +118,7 @@ def build_camoufox_kwargs(
     firefox_user_prefs: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build verified keyword arguments for Camoufox(persistent_context=True, ...)."""
+    _keep_generated_screen_y()
     config: Dict[str, Any] = {}
     if timezone and timezone != AUTO:
         config["timezone"] = timezone
