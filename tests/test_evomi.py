@@ -107,7 +107,7 @@ class TestPerProfileSessions(StoreCase):
         pa = password_of(resolve_network(a, self.proxies).proxy)
         pb = password_of(resolve_network(b, self.proxies).proxy)
         self.assertNotEqual(pa, pb)
-        self.assertEqual(pa, f"Base_pw-9Zq_session-{evomi.session_id(a.id)}_lifetime-60")
+        self.assertEqual(pa, f"Base_pw-9Zq_session-{self.px.session_for(a)}_lifetime-60")
         # Every launch path resolves the same credentials (resolve_network is pure).
         self.assertEqual(pa, password_of(resolve_network(self.store.get_profile(a.id), self.proxies).proxy))
 
@@ -119,7 +119,25 @@ class TestPerProfileSessions(StoreCase):
         self.store.new_provider_session([a.id])
         second = password_of(resolve_network(self.store.get_profile(a.id), self.proxies).proxy)
         self.assertNotEqual(first, second)
-        self.assertTrue(second.endswith(evomi.session_id(a.id, 1)))
+        self.assertTrue(second.endswith(self.px.session_for(self.store.get_profile(a.id))))
+
+    def test_new_targeting_is_a_new_session(self) -> None:
+        """Evomi binds an IP to the session ID: a profile first used with "any country" kept its
+        Russian IP after switching to Hong Kong because the ID did not change."""
+        a = self.profile("A")
+        any_country = self.px.session_for(a)
+        hk = self.store.update_profile(a.id, {"provider_opts": {"country": "HK"}})
+        self.assertNotEqual(self.px.session_for(hk), any_country)
+        city = self.store.update_profile(a.id, {"provider_opts": {"country": "HK", "city": "hong kong"}})
+        self.assertNotEqual(self.px.session_for(city), self.px.session_for(hk))
+        hard = self.store.update_profile(a.id, {"provider_opts": {"country": "HK", "city": "hong kong", "mode": "hard"}})
+        self.assertNotEqual(self.px.session_for(hard), self.px.session_for(city))
+        # The lifetime only says how long Evomi keeps the IP: changing it keeps the session.
+        longer = self.store.update_profile(a.id, {"provider_opts": {"country": "HK", "city": "hong kong", "mode": "hard", "lifetime": 600}})
+        self.assertEqual(self.px.session_for(longer), self.px.session_for(hard))
+        # Going back to the same targeting returns to the same session (deterministic).
+        back = self.store.update_profile(a.id, {"provider_opts": {"country": None, "city": None, "mode": None, "lifetime": None}})
+        self.assertEqual(self.px.session_for(back), any_country)
 
     def test_location_is_cached_per_session_and_always_rechecked(self) -> None:
         a = self.profile("A")
@@ -155,7 +173,7 @@ class TestPerProfileSessions(StoreCase):
         a = self.profile("A")
         text = ProcessManager(store=self.store, adopt_running=False).diagnostics(a.id)
         self.assertNotIn("Base_pw", text)
-        self.assertNotIn(evomi.session_id(a.id), text)
+        self.assertNotIn(self.px.session_for(a), text)
 
 
 class TestTargetsApi(unittest.TestCase):
@@ -209,7 +227,7 @@ class TestBridge(StoreCase):
     def test_row_shows_provider_session_without_secrets(self) -> None:
         a = self.profile("A", provider_opts={"country": "US"})
         row = self.api.profiles_get(a.id)["data"]
-        self.assertEqual(row["provider"]["session"], evomi.session_id(a.id))
+        self.assertEqual(row["provider"]["session"], self.px.session_for(a))
         self.assertIn("US", row["provider"]["summary"])
         self.assertNotIn("Base_pw", str(row))
 
@@ -223,8 +241,8 @@ class TestBridge(StoreCase):
 
         with patch("camoudesk.ui.api.check_proxy_config", side_effect=fake_check):
             res = self.api.proxy_test({"proxy_id": self.px.id, "profile_id": a.id})["data"]
-            self.assertEqual(res["session"], evomi.session_id(a.id))
-            self.assertTrue(seen[-1].endswith(f"session-{evomi.session_id(a.id)}_lifetime-60"))
+            self.assertEqual(res["session"], self.px.session_for(a))
+            self.assertTrue(seen[-1].endswith(f"session-{self.px.session_for(a)}_lifetime-60"))
             self.assertEqual(resolve_network(self.store.get_profile(a.id), self.proxies).timezone, "Europe/Berlin")
             # Unsaved form targeting is checked as-is but not cached as the profile's location.
             self.api.proxy_test({"proxy_id": self.px.id, "profile_id": a.id, "provider_opts": {"country": "JP"}})

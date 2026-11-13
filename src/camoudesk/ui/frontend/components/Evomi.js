@@ -1,7 +1,12 @@
 // Evomi integration: targeting and session controls shared by the proxy editor and profile drawer.
 import { html, useEffect, useState } from "../vendor/preact-htm.module.js";
 import { call } from "../lib/api.js";
+import { EVOMI_PLACES } from "./evomiPlaces.js";
 import { Field, Segmented, Select, TextInput } from "./ui.js";
+
+// Evomi's own list (API key) when it has one for the country, otherwise the built-in suggestions.
+const placesFor = (targets, country, kind) =>
+  (targets?.source === "evomi" && targets?.[kind]?.[country]?.length ? targets[kind][country] : EVOMI_PLACES[country]?.[kind]) || [];
 
 export const isEvomiHost = (host) => /(^|\.)evomi(-proxy)?\.com\.?$/i.test(String(host || "").trim());
 export const evomiProduct = (host) => (/^(core-residential|rpc)\./i.test(String(host || "").trim()) ? "rpc" : "rp");
@@ -45,15 +50,23 @@ export function useEvomiTargets(product) {
 }
 export const forgetEvomiTargets = () => targetCache.clear();
 
-function PlacePicker({ label, value, options, onChange, disabled, inheritLabel }) {
-  if (options && options.length) {
-    return html`<${Field} label=${label}>
-      <${Select} value=${value || ""} disabled=${disabled} onChange=${onChange}
-        options=${[{ value: "", label: inheritLabel }, ...options.map((o) => ({ value: o, label: o.replace(/\./g, " ") }))]} />
+const OTHER = "__other__";
+const placeLabel = (v) => v.replace(/\./g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+// A dropdown of known places (Evomi's list with an API key, built-in suggestions otherwise) with
+// "Type another…" for anything else; free text when no list exists for the country.
+function PlacePicker({ label, value, options, onChange, disabled, inheritLabel, hint }) {
+  const list = options || [];
+  const [typing, setTyping] = useState(false);
+  const custom = typing || (value && !list.includes(value));
+  if (list.length && !custom) {
+    return html`<${Field} label=${label} hint=${hint}>
+      <${Select} value=${value || ""} disabled=${disabled} onChange=${(v) => (v === OTHER ? setTyping(true) : onChange(v))}
+        options=${[{ value: "", label: inheritLabel }, ...list.map((o) => ({ value: o, label: placeLabel(o) })), { value: OTHER, label: "Type another…" }]} />
     <//>`;
   }
-  return html`<${Field} label=${label}>
-    <${TextInput} value=${(value || "").replace(/\./g, " ")} disabled=${disabled} placeholder=${inheritLabel}
+  return html`<${Field} label=${label} hint=${list.length ? html`<a href="#" onClick=${(e) => { e.preventDefault(); setTyping(false); onChange(""); }}>Back to the list</a>` : hint}>
+    <${TextInput} value=${(value || "").replace(/\./g, " ")} disabled=${disabled} placeholder=${disabled ? "Pick a country first" : inheritLabel}
       onInput=${(v) => onChange(v.trim().toLowerCase().replace(/\s+/g, "."))} />
   <//>`;
 }
@@ -81,10 +94,10 @@ export function EvomiFields({ value, onChange, product, base = null, disabled })
           options=${[{ value: "", label: anyLabel }, ...countries.map((c) => ({ value: c, label: `${countryName(c)} (${c})` }))]} />
       <//>
       <${PlacePicker} label="Region" value=${v.region} disabled=${disabled || !country}
-        options=${country ? targets?.regions?.[country] : null} inheritLabel=${placeInherit("region")}
+        options=${country ? placesFor(targets, country, "regions") : null} inheritLabel=${placeInherit("region")}
         onChange=${(region) => set({ region })} />
       <${PlacePicker} label="City" value=${v.city} disabled=${disabled || !country}
-        options=${country ? targets?.cities?.[country] : null} inheritLabel=${placeInherit("city")}
+        options=${country ? placesFor(targets, country, "cities") : null} inheritLabel=${placeInherit("city")}
         onChange=${(city) => set({ city })} />
     </div>
     <${Field} label="Session" wide hint=${MODE_HELP[mode]}>
@@ -101,7 +114,7 @@ export function EvomiFields({ value, onChange, product, base = null, disabled })
         <//>`
       : null}
     ${targets?.source === "builtin"
-      ? html`<p class="note small">${targets.warning ? `${targets.warning}. ` : ""}Add an Evomi API key in Settings for the official region and city lists; otherwise type them (e.g. "new york").</p>`
+      ? html`<p class="note small">${targets.warning ? `${targets.warning}. ` : ""}Region and city lists are common places; Evomi refuses a place it has no IPs for. Add an Evomi API key in Settings for Evomi's exact lists.</p>`
       : null}
   </div>`;
 }

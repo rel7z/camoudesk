@@ -141,9 +141,19 @@ def effective_opts(proxy_opts: Dict[str, Any], profile_opts: Optional[Dict[str, 
     return merged
 
 
-def session_id(profile_id: str, rotation: int = 0) -> str:
-    """Stable 10-character alphanumeric session ID for a profile (Evomi accepts 6–10)."""
-    digest = hashlib.sha256(f"camoudesk:evomi:{profile_id}:{int(rotation)}".encode()).digest()
+def targeting_key(opts: Dict[str, Any]) -> str:
+    """What decides where a session's IP comes from. Evomi binds an IP to the session ID, not to
+    the targeting: reusing an ID after changing the country keeps the old country's IP. So the
+    targeting (and session type) is part of the ID; the lifetime is not, so editing it keeps the IP."""
+    parts = [str(opts.get(k) or "") for k in (*_TARGET_KEYS, "mode")]
+    parts += [f"{k}={v}" for k, v in sorted((opts.get("extra") or {}).items())]
+    return "|".join(parts)
+
+
+def session_id(profile_id: str, rotation: int = 0, targeting: str = "") -> str:
+    """Stable 10-character alphanumeric session ID (Evomi accepts 6–10) for a profile, its
+    "New IP" counter and its targeting (see targeting_key)."""
+    digest = hashlib.sha256(f"camoudesk:evomi:{profile_id}:{int(rotation)}:{targeting}".encode()).digest()
     alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
     num = int.from_bytes(digest[:10], "big")
     out = []

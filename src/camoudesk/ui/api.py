@@ -606,6 +606,13 @@ class DesktopBridgeApi:
         probe = SimpleNamespace(id=current.id if current is not None else "draft", provider_opts=opts)
         cfg = saved.config_for(probe)
         result = check_proxy_config(cfg)
+        eff = saved.profile_opts(probe)
+        place = eff.get("city") or eff.get("region")
+        if not result.get("ok") and place and "credentials" not in str(result.get("error")) and "407" not in str(result.get("error")):
+            # Evomi refuses the connection when it has no IPs for a city/region right now.
+            where = place.replace(".", " ").title()
+            result["error"] = (f"Evomi has no IPs in {where} right now ({result.get('error')}). "
+                               "Try a nearby city, only the region or country, or another time.")
         if current is not None and result.get("ok"):
             net = resolve_network(current, self.proxies)
             from camoudesk.core.launcher import session_key

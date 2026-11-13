@@ -82,8 +82,9 @@ class SavedProxy:
         return evomi.effective_opts(self.provider, getattr(profile, "provider_opts", None) or {})
 
     def session_for(self, profile: Any) -> str:
+        """The profile's own session ID; a new country/region/city or session type is a new ID."""
         rotation = int((getattr(profile, "provider_opts", None) or {}).get("rotation") or 0)
-        return evomi.session_id(profile.id, rotation)
+        return evomi.session_id(profile.id, rotation, evomi.targeting_key(self.profile_opts(profile)))
 
     def config_for(self, profile: Any) -> ProxyConfig:
         """What ``profile`` routes through: its own provider session, or the plain proxy."""
