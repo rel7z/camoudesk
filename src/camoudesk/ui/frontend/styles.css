@@ -190,8 +190,11 @@ button:disabled { cursor: default; }
 
 /* ---------------------------------------------------------------- menu */
 .menu { position: relative; }
-.menu-pop { position: absolute; right: 0; top: calc(100% + 4px); min-width: 200px; padding: 5px; background: var(--panel);
-  border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: var(--shadow); z-index: 30; text-align: left; }
+/* Rendered on <body> (ui.js Portal) and placed by placeMenu, so no table or panel can clip it. */
+.menu-pop { position: fixed; min-width: 200px; max-width: calc(100vw - 16px); padding: 5px; background: var(--panel);
+  border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: var(--shadow); z-index: 70; text-align: left;
+  overflow: auto; }
+.menu-pop button { white-space: nowrap; }
 .menu-pop button { width: 100%; display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 6px; color: var(--text); }
 .menu-pop button:hover:not(:disabled) { background: var(--hover); }
 .menu-pop button:disabled { opacity: 0.4; }
@@ -293,7 +296,6 @@ button:disabled { cursor: default; }
 .import-preview { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-2); }
 .import-errors { display: flex; flex-direction: column; gap: 4px; font-size: 12px; max-height: 160px; overflow: auto; }
 .menu-pop .menu-title { padding: 6px 9px 4px; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.4px; }
-.menu-up .menu-pop { top: auto; bottom: calc(100% + 6px); max-height: 320px; overflow: auto; }
 .nowrap { white-space: nowrap; }
 
 /* ---------------------------------------------------------------- cookies */
