@@ -81,3 +81,19 @@ export function tagStyle(tag) {
   for (const ch of tag) h = (h * 31 + ch.charCodeAt(0)) % 360;
   return `--tag-h: ${h}`;
 }
+
+// "Randomize" in the New profile form: an operating system weighted roughly like desktop usage,
+// and a readable random name.
+export function randomOs() {
+  const r = Math.random();
+  return r < 0.6 ? "windows" : r < 0.9 ? "macos" : "linux";
+}
+
+const ADJECTIVES = ["Swift", "Quiet", "Bright", "Calm", "Bold", "Clever", "Silver", "Amber", "Lucky", "Rapid", "Gentle", "Brave",
+  "Crisp", "Golden", "Hidden", "Misty", "Noble", "Polar", "Royal", "Sunny", "Wild", "Velvet", "Cosmic", "Frosty"];
+const NOUNS = ["Falcon", "Otter", "Maple", "Harbor", "Comet", "Fox", "Willow", "Lynx", "Cedar", "Heron", "Pine", "Orca",
+  "Raven", "Tiger", "River", "Summit", "Breeze", "Coral", "Badger", "Meadow", "Panda", "Canyon", "Ember", "Dune"];
+const pick = (list) => list[Math.floor(Math.random() * list.length)];
+export function randomName() {
+  return `${pick(ADJECTIVES)} ${pick(NOUNS)} ${10 + Math.floor(Math.random() * 90)}`;
+}

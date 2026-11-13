@@ -30,6 +30,7 @@ const P = {
   download: "M12 4v11M7 10.5l5 5l5-5M4.5 20h15",
   upload: "M12 20V9M7 13.5l5-5l5 5M4.5 4h15",
   logo: "M4 5l4 3l4-4l4 4l4-3v9a8 8 0 0 1-16 0zM9 12.5h.01M15 12.5h.01",
+  dice: "M7 4h10a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3M9 9h.01M15 9h.01M12 12h.01M9 15h.01M15 15h.01",
 };
 
 export function Icon({ name, size = 16, class: cls = "" }) {

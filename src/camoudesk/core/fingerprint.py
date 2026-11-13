@@ -63,15 +63,14 @@ def load_saved_fingerprint(profile_dir: Path) -> Dict[str, Any] | None:
     return None
 
 
-def generate_and_save_fingerprint(
-    profile_dir: Path,
+def generate_verified_fingerprint(
     os_target: str,
     screen: Optional[Tuple[int, int]] = None,
-) -> Tuple[Dict[str, Any], FingerprintSummary]:
-    """Generate a coherent Firefox fingerprint via fpgen and persist it to disk.
+) -> Dict[str, Any]:
+    """Generate a coherent Firefox fingerprint via fpgen without saving it (e.g. for a preview).
 
     ``screen`` pins the generated screen to an exact (width, height); a size no recorded device
-    of that OS has raises ValueError and the saved fingerprint is left untouched.
+    of that OS has raises ValueError.
     """
     normalized_os = validate_os_target(os_target)
     kwargs: Dict[str, Any] = {"os": normalized_os}
@@ -80,7 +79,6 @@ def generate_and_save_fingerprint(
 
         w, h = screen
         kwargs["screen"] = Screen(min_width=w, max_width=w, min_height=h, max_height=h)
-    raw_fp = None
     # fpgen's output is verified rather than trusted: it ignored an exact screen bound about 1 in
     # 8 times (2560x1440 -> 3440x1440 on Windows), and ~3% of "linux" fingerprints were Windows
     # or mixed (Linux platform with a Windows oscpu) -- an incoherence detection scripts look for.
@@ -96,16 +94,33 @@ def generate_and_save_fingerprint(
         scr = candidate.get("screen") or {}
         if screen and (scr.get("width"), scr.get("height")) != tuple(screen):
             continue
-        raw_fp = candidate
-        break
-    if raw_fp is None:
-        size = f" with a {screen[0]}x{screen[1]} screen" if screen else ""
-        raise ValueError(f"Could not generate a consistent {normalized_os} fingerprint{size}; try again or pick another size.")
-    # Round-trip via JSON so stored and in-memory structures match identically.
-    serializable = json.loads(json.dumps(raw_fp))
+        # Round-trip via JSON so stored and in-memory structures match identically.
+        return json.loads(json.dumps(candidate))
+    size = f" with a {screen[0]}x{screen[1]} screen" if screen else ""
+    raise ValueError(f"Could not generate a consistent {normalized_os} fingerprint{size}; try again or pick another size.")
+
+
+def save_fingerprint(profile_dir: Path, os_target: str, fp: Dict[str, Any]) -> FingerprintSummary:
+    """Persist an already generated fingerprint after re-checking it matches ``os_target``."""
+    normalized_os = validate_os_target(os_target)
+    if not isinstance(fp, dict) or not fingerprint_matches_os(fp, normalized_os):
+        raise ValueError(f"That fingerprint is not a consistent {normalized_os} device")
+    serializable = json.loads(json.dumps(fp))
     _atomic_write_json(profile_dir / FINGERPRINT_FILENAME, serializable)
-    summary = FingerprintSummary.from_fpgen_dict(normalized_os, serializable)
-    return serializable, summary
+    return FingerprintSummary.from_fpgen_dict(normalized_os, serializable)
+
+
+def generate_and_save_fingerprint(
+    profile_dir: Path,
+    os_target: str,
+    screen: Optional[Tuple[int, int]] = None,
+) -> Tuple[Dict[str, Any], FingerprintSummary]:
+    """Generate a coherent Firefox fingerprint via fpgen and persist it to disk.
+
+    On failure (e.g. an impossible screen size) the saved fingerprint is left untouched.
+    """
+    fp = generate_verified_fingerprint(os_target, screen)
+    return fp, save_fingerprint(profile_dir, os_target, fp)
 
 
 def ensure_profile_fingerprint(

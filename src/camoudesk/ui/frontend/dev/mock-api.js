@@ -32,6 +32,7 @@ const proxies = [
 const EVOMI_TARGETS = { countries: ["BR", "DE", "FR", "GB", "ID", "JP", "US"], regions: { US: ["arizona", "california", "new.york", "texas"] },
   cities: { US: ["dallas", "los.angeles", "new.york", "phoenix"], DE: ["berlin", "munich"] }, source: "builtin" };
 let evomiKey = false;
+const previews = {};
 const sessionOf = (p) => (p.id.replace(/\W/g, "") + "k3x9q2m7ab").slice(-4) + String(p.provider_opts?.rotation || 0) + "q2m7a";
 function withProvider(p) {
   const px = proxies.find((x) => x.id === p.proxy_id);
@@ -123,9 +124,19 @@ export function installMockApi() {
     }),
     folders_rename: guard((old, name) => { let n = 0; profiles.forEach((p) => p.folder === old && (p.folder = name, n++)); return { changed: n }; }),
     profiles_get: guard((id) => ({ ...find(id) })),
+    fingerprint_preview: guard(async (os, screen) => {
+      await sleep(250);
+      const w = screen ? screen.split("x") : [[1920, 1080], [1536, 864], [2560, 1440], [1440, 900], [1366, 768]][Math.floor(Math.random() * 5)];
+      const token = Math.random().toString(16).slice(2);
+      const summary = { ...FP[os], os, screen: `${w[0]}x${w[1]}`, cores: [4, 8, 12, 16][Math.floor(Math.random() * 4)] };
+      previews[token] = summary;
+      return { token, os, summary };
+    }),
     profiles_create: guard((d) => {
       if (!d.name) throw new Error("Profile name is required");
+      const pv = d.fp_preview && previews[d.fp_preview];
       const p = applyPayload(mk({ created_at: now() }), { ...settings.new_profile, ...d });
+      if (pv && pv.os === p.os) p.fingerprint_summary = pv;
       profiles.unshift(p);
       return { ...p };
     }),

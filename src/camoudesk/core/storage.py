@@ -22,6 +22,7 @@ from camoudesk.config import (
 from camoudesk.core.fingerprint import (
     ensure_profile_fingerprint,
     generate_and_save_fingerprint,
+    save_fingerprint,
     summary_dict,
 )
 from camoudesk.models.profile import (
@@ -274,6 +275,7 @@ class ProfileStore:
         folder: str = "",
         proxy_id: str = "",
         fp_overrides: Optional[Dict[str, Any]] = None,
+        fingerprint: Optional[Dict[str, Any]] = None,
     ) -> Profile:
         safe_id = sanitize_profile_id(profile_id)
         norm_os = validate_os_target(os_target)
@@ -285,7 +287,10 @@ class ProfileStore:
         overrides = clean_fp_overrides({k: v for k, v in (fp_overrides or {}).items() if v is not None})
         if "webrtc" in overrides:
             block_webrtc = overrides["webrtc"] == "block"
-        if overrides.get("screen"):
+        if fingerprint is not None:
+            # A fingerprint the user previewed (and chose) before creating the profile.
+            summary = save_fingerprint(pdir, norm_os, fingerprint)
+        elif overrides.get("screen"):
             _, summary = generate_and_save_fingerprint(pdir, norm_os, parse_screen(overrides["screen"]))
         else:
             _, summary = ensure_profile_fingerprint(pdir, norm_os)
@@ -320,7 +325,8 @@ class ProfileStore:
         with self._locked():
             return self._find(self._read_entries(), safe_id)
 
-    def create_profile(self, data: Dict[str, Any]) -> Profile:
+    def create_profile(self, data: Dict[str, Any], fingerprint: Optional[Dict[str, Any]] = None) -> Profile:
+        """Create a profile; ``fingerprint`` uses an already generated (previewed) device."""
         name = str(data.get("name") or "").strip()
         if not name:
             raise ValueError("Profile name is required")
@@ -342,6 +348,7 @@ class ProfileStore:
             folder=str(data.get("folder") or ""),
             proxy_id=str(data.get("proxy_id") or ""),
             fp_overrides=data.get("fp_overrides") if isinstance(data.get("fp_overrides"), dict) else None,
+            fingerprint=fingerprint,
         )
         if isinstance(data.get("proxy_check"), dict) and profile.proxy:
             self._apply_inline_check(profile, data["proxy_check"])

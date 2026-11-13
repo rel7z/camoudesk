@@ -29,7 +29,7 @@ from camoudesk.core.proxy_store import ProxyStore
 from camoudesk.core.settings_store import SettingsStore
 from camoudesk.core.storage import ProfileStore
 from camoudesk.manager.process_manager import ProcessManager
-from camoudesk.models.profile import Profile, ProxyConfig, validate_os_target
+from camoudesk.models.profile import FingerprintSummary, Profile, ProxyConfig, parse_screen, validate_os_target
 from camoudesk.models.proxy import SavedProxy
 
 
@@ -127,6 +127,9 @@ class DesktopBridgeApi:
         self.proxies = proxies or manager.proxies
         self.settings = settings or SettingsStore(store.app_dir)
         self.providers = ProviderStore(store.app_dir)
+        # Fingerprints shown in the New profile form, by one-time token: {token: (os, fp, created)}.
+        self._fp_previews: Dict[str, Any] = {}
+        self._fp_previews_lock = threading.Lock()
         self._checking: Set[str] = set()
         self._checking_lock = threading.Lock()
         self._notify_proxies: Callable[[], None] = lambda: None
@@ -302,14 +305,60 @@ class DesktopBridgeApi:
             raise KeyError("Profile not found")
         return self._row(profile)
 
+    _PREVIEW_TTL = 30 * 60
+    _PREVIEW_MAX = 20
+
+    @_bridge
+    def fingerprint_preview(self, profile_os: str, screen: Optional[str] = None) -> Dict[str, Any]:
+        """A new device for the New profile form: its summary, and a one-time token that makes
+        profiles_create use exactly this fingerprint. The fingerprint itself stays here."""
+        from camoudesk.core.fingerprint import generate_verified_fingerprint
+        from camoudesk.core.fingerprint import summary_dict
+
+        os_key = validate_os_target(profile_os)
+        pinned = parse_screen(screen) if screen else None
+        if screen and not pinned:
+            raise ValueError(f"Invalid screen size '{screen}'")
+        fp = generate_verified_fingerprint(os_key, pinned)
+        token = os.urandom(12).hex()
+        now = time.time()
+        with self._fp_previews_lock:
+            live = {k: v for k, v in self._fp_previews.items() if now - v[2] < self._PREVIEW_TTL}
+            while len(live) >= self._PREVIEW_MAX:  # keep the newest ones
+                live.pop(min(live, key=lambda k: live[k][2]))
+            live[token] = (os_key, fp, now)
+            self._fp_previews = live
+        return {"token": token, "os": os_key, "summary": summary_dict(FingerprintSummary.from_fpgen_dict(os_key, fp))}
+
+    def _take_preview(self, token: Any, os_key: str, screen: Any) -> Optional[Dict[str, Any]]:
+        """The previewed fingerprint for ``token`` if it fits this profile (one use only)."""
+        if not isinstance(token, str) or not token:
+            return None
+        with self._fp_previews_lock:
+            entry = self._fp_previews.pop(token, None)
+        if entry is None:
+            return None
+        p_os, fp, created = entry
+        if p_os != os_key or time.time() - created > self._PREVIEW_TTL:
+            return None
+        pinned = parse_screen(screen) if screen else None
+        scr = fp.get("screen") or {}
+        if pinned and (scr.get("width"), scr.get("height")) != tuple(pinned):
+            return None
+        return fp
+
     @_bridge
     def profiles_create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(payload or {})
+        token = payload.pop("fp_preview", None)
         defaults = self.settings.get()["new_profile"]
-        data = {**defaults, **self._normalize(payload or {})}
+        data = {**defaults, **self._normalize(payload)}
+        os_key = validate_os_target(data.get("os") or "macos")
         webgl = (data.get("fp_overrides") or {}).get("webgl")
-        if webgl and list(webgl) not in gpu_options(validate_os_target(data.get("os") or "macos")):
+        if webgl and list(webgl) not in gpu_options(os_key):
             raise ValueError("That graphics card is not available for this operating system.")
-        return self._row(self.store.create_profile(data))
+        fingerprint = self._take_preview(token, os_key, (data.get("fp_overrides") or {}).get("screen"))
+        return self._row(self.store.create_profile(data, fingerprint=fingerprint))
 
     @_bridge
     def profiles_update(self, profile_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:

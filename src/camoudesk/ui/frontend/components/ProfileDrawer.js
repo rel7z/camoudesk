@@ -3,7 +3,7 @@ import { html, useEffect, useMemo, useRef, useState } from "../vendor/preact-htm
 import { call } from "../lib/api.js";
 import { closeDrawer, refreshProfiles, saveProfile, stopProfile } from "../lib/actions.js";
 import { confirmDialog, getState, setState, toast, useStore } from "../lib/store.js";
-import { LOCALES, OS_LABELS, copyText, gpuLabel, timezones } from "../lib/util.js";
+import { LOCALES, OS_LABELS, copyText, gpuLabel, randomName, randomOs, timezones } from "../lib/util.js";
 import { Icon } from "./icons.js";
 import { EvomiFields } from "./Evomi.js";
 import { ProxyLineInput, ProxySummary, proxyLineText } from "./ProxyLine.js";
@@ -253,7 +253,30 @@ function GeneralTab({ f, set, disabled, locked, isNew }) {
   </div>`;
 }
 
-function FingerprintTab({ f, set, row, disabled }) {
+// New profile: the device this profile will be. Creating it keeps exactly this fingerprint.
+function DevicePreview({ preview, onAnother }) {
+  const sm = preview?.summary;
+  return html`<div class="device-card">
+    <div class="device-head">
+      <strong>Device</strong>
+      <${Button} size="sm" icon="dice" busy=${preview?.loading} onClick=${onAnother}>Another device<//>
+    </div>
+    ${preview?.error
+      ? html`<p class="text-err small">${preview.error}</p>`
+      : sm
+      ? html`<div class="kv-card">
+          <span>System</span><strong>${OS_LABELS[sm.os] || sm.os}</strong>
+          <span>Screen</span><strong>${sm.screen || "—"}</strong>
+          <span>CPU cores</span><strong>${sm.cores || "—"}</strong>
+          <span>Graphics</span><strong title=${sm.gpu}>${gpuLabel(sm.gpu) || "—"}</strong>
+          <span>User agent</span><strong class="mono wrap">${sm.user_agent || "—"}</strong>
+        </div>`
+      : html`<div class="skeleton device-skeleton" />`}
+    <p class="muted small">Unique to this profile and kept on every launch. Websites see this device.</p>
+  </div>`;
+}
+
+function FingerprintTab({ f, set, row, disabled, preview, onAnother }) {
   const [opts, setOpts] = useState(null);
   const [busy, setBusy] = useState(false);
   const [screen, setScreen] = useState(f.fp_screen);
@@ -294,7 +317,7 @@ function FingerprintTab({ f, set, row, disabled }) {
       <span>CPU cores</span><strong>${fp.cores || "—"}</strong>
       <span>Graphics</span><strong title=${fp.gpu}>${f.fp_webgl ? f.fp_webgl.split("|||")[1].replace(/, or similar$/, "") + " (override)" : gpuLabel(fp.gpu) || "—"}</strong>
       <span>User agent</span><strong class="mono wrap">${fp.user_agent || "—"}</strong>
-    </div>` : html`<p class="note"><${Icon} name="info" /> A unique fingerprint for the chosen system is generated when you create the profile, and stays the same on every launch.</p>`}
+    </div>` : html`<${DevicePreview} preview=${preview} onAnother=${onAnother} />`}
 
     <div class="grid-2">
       <${Field} label="Screen size" hint=${row ? "Applied when you generate a new fingerprint" : "The fingerprint is generated for this size"}>
@@ -453,6 +476,21 @@ export function ProfileDrawer() {
   const [check, setCheck] = useState(null);
   const [saving, setSaving] = useState(false);
   const lineCtl = useRef(null); // the Custom proxy field (flushed before saving)
+  // New profile: the previewed device ({token, os, screen, summary} | {loading} | {error}).
+  const [preview, setPreview] = useState(null);
+  const previewSeq = useRef(0);
+  const randomNameRef = useRef("");
+  const loadPreview = async (os, screen) => {
+    const id = ++previewSeq.current;
+    const key = { os, screen: screen || "" };
+    setPreview((prev) => ({ ...(prev && prev.os === os ? prev : {}), ...key, loading: true }));
+    try {
+      const res = await call("fingerprint_preview", os, screen || null);
+      if (id === previewSeq.current) setPreview({ ...key, token: res.token, summary: res.summary });
+    } catch (err) {
+      if (id === previewSeq.current) setPreview({ ...key, error: err.message });
+    }
+  };
 
   useEffect(() => {
     if (!drawer) return;
@@ -460,7 +498,16 @@ export function ProfileDrawer() {
     setF(init);
     setInitial(JSON.stringify(init));
     setCheck(null);
+    setPreview(null);
+    randomNameRef.current = "";
   }, [drawer?.id, drawer && !row]);
+
+  // A new profile always shows the device it will get; changing system or screen re-previews.
+  useEffect(() => {
+    if (!drawer || drawer.id || !f) return;
+    if (preview && preview.os === f.os && preview.screen === (f.fp_screen || "")) return;
+    loadPreview(f.os, f.fp_screen);
+  }, [drawer && !drawer.id, f?.os, f?.fp_screen, preview === null]);
 
   const dirty = f && initial !== JSON.stringify(f);
   const requestClose = async () => {
@@ -482,6 +529,14 @@ export function ProfileDrawer() {
   const set = (patch) => setF((prev) => ({ ...prev, ...patch }));
   const tab = drawer.tab || "general";
   const isNew = !drawer.id;
+  const randomize = () => {
+    const os = randomOs();
+    const typed = f.name.trim() && f.name !== randomNameRef.current; // never replace a name you typed
+    const name = typed ? f.name : randomName();
+    randomNameRef.current = typed ? randomNameRef.current : name;
+    set({ os, name, fp_webgl: "", fp_screen: "" });
+    loadPreview(os, "");
+  };
 
   const submit = async (e) => {
     e && e.preventDefault();
@@ -504,6 +559,9 @@ export function ProfileDrawer() {
         }
       }
       const full = toPayload(current, check);
+      if (isNew && preview?.token && preview.os === current.os && preview.screen === (current.fp_screen || "")) {
+        full.fp_preview = preview.token; // create exactly the device shown in the form
+      }
       // A running browser keeps its network, fingerprint and system settings; only labels change.
       const payload = running ? { name: full.name, notes: full.notes, folder: full.folder, tags: full.tags } : full;
       const saved = await saveProfile(drawer.id, payload);
@@ -522,7 +580,10 @@ export function ProfileDrawer() {
           <h2>${isNew ? "New profile" : row?.name || "Profile"}</h2>
           ${row ? html`<span class="muted small">${OS_LABELS[row.os]} · ${row.proxy_label}</span>` : html`<span class="muted small">Settings start from your defaults</span>`}
         </div>
-        <${IconButton} icon="x" title="Close (Esc)" onClick=${requestClose} />
+        <div class="inline">
+          ${isNew ? html`<${Button} size="sm" icon="dice" busy=${preview?.loading} onClick=${randomize} title="Random system, device and name">Randomize<//>` : null}
+          <${IconButton} icon="x" title="Close (Esc)" onClick=${requestClose} />
+        </div>
       </header>
       ${running
         ? html`<div class="banner"><${Icon} name="info" /><span>Running: you can rename it and edit notes, folder and tags. Stop it to change network, fingerprint or system settings.</span>
@@ -532,7 +593,8 @@ export function ProfileDrawer() {
       <div class="drawer-body">
         ${tab === "general" ? html`<${GeneralTab} f=${f} set=${set} disabled=${false} locked=${running} isNew=${isNew} />` : null}
         ${tab === "network" ? html`<${NetworkTab} f=${f} set=${set} row=${row} disabled=${running} check=${check} setCheck=${setCheck} lineCtl=${lineCtl} />` : null}
-        ${tab === "fingerprint" ? html`<${FingerprintTab} f=${f} set=${set} row=${row} disabled=${running} />` : null}
+        ${tab === "fingerprint" ? html`<${FingerprintTab} f=${f} set=${set} row=${row} disabled=${running}
+          preview=${preview} onAnother=${() => loadPreview(f.os, f.fp_screen)} />` : null}
         ${tab === "cookies" ? html`<${CookiesTab} row=${row} disabled=${running} />` : null}
         ${tab === "advanced" ? html`<${AdvancedTab} f=${f} set=${set} row=${row} disabled=${running} />` : null}
       </div>
