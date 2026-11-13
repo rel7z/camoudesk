@@ -127,6 +127,7 @@ class DesktopBridgeApi:
         self._checking: Set[str] = set()
         self._checking_lock = threading.Lock()
         self._notify_proxies: Callable[[], None] = lambda: None
+        self._theme_listener: Optional[Callable[[str], None]] = None
 
     def set_window(self, window: Any) -> None:
         """The pywebview window, used for native open/save dialogs."""
@@ -145,6 +146,10 @@ class DesktopBridgeApi:
         if kwargs.get("allow_multiple"):
             return list(result)  # type: ignore[return-value]
         return result if isinstance(result, str) else result[0]
+
+    def set_theme_listener(self, callback: Callable[[str], None]) -> None:
+        """Called with the new theme when Settings → Appearance changes (native window chrome)."""
+        self._theme_listener = callback
 
     def set_proxy_notifier(self, callback: Callable[[], None]) -> None:
         """Called (from worker threads) when saved proxies change, e.g. as checks finish."""
@@ -653,6 +658,11 @@ class DesktopBridgeApi:
     def settings_update(self, patch: Dict[str, Any]) -> Dict[str, Any]:
         updated = self.settings.update(patch or {})
         self.sync_api_server(updated)
+        if "theme" in (patch or {}) and self._theme_listener is not None:
+            try:
+                self._theme_listener(updated["theme"])
+            except Exception:
+                pass
         return updated
 
     # ------------------------------------------------------------------ local REST API

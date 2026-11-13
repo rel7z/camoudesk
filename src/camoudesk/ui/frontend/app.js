@@ -37,6 +37,7 @@ function App() {
   }, []);
 
   return html`<div class="app">
+    <div class="window-drag pywebview-drag-region" aria-hidden="true"></div>
     <${Sidebar} />
     <main class="main">
       ${view === "profiles" ? html`<${ProfilesView} />` : null}

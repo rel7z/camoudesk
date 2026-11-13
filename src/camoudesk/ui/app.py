@@ -8,6 +8,7 @@ import webview
 from camoudesk.core.storage import ProfileStore
 from camoudesk.manager.process_manager import ProcessManager
 from camoudesk.ui.api import DesktopBridgeApi
+from camoudesk.ui import window_chrome
 from camoudesk.ui.single_instance import InstanceLock, activate_existing
 
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
@@ -51,7 +52,15 @@ def main() -> None:
         except Exception:
             pass
 
+    def _apply_chrome(*_args: object) -> None:
+        # Title bar blends into the page and follows the theme (see ui/window_chrome.py).
+        window_chrome.apply(window, api.settings.get().get("theme", "dark"))
+
+    window.events.before_show += _apply_chrome
+    window.events.shown += _apply_chrome
+
     api.set_window(window)
+    api.set_theme_listener(lambda theme: window_chrome.apply(window, theme))
     manager.add_listener(_push_status)
     api.set_proxy_notifier(_push_proxies)
     manager.start_monitor()
