@@ -28,6 +28,7 @@ from camoudesk.models.profile import (
     Profile,
     ProxyConfig,
     clean_fp_overrides,
+    clean_provider_opts,
     clean_start_urls,
     clean_tags,
     parse_screen,
@@ -200,6 +201,39 @@ class ProfileStore:
                 self._apply_inline_check(target, check)
                 self._write_entries(entries)
 
+    def record_session_check(self, profile_id: str, check: Dict[str, Any], key: str) -> None:
+        """Cache the exit location of a profile's own provider session (``key`` names the session)."""
+        safe_id = sanitize_profile_id(profile_id)
+        with self._locked():
+            entries = self._read_entries()
+            target = self._find(entries, safe_id)
+            if target is not None and target.proxy_id:
+                self._apply_inline_check(target, check)
+                target.provider_opts = clean_provider_opts({**target.provider_opts, "checked": key})
+                self._write_entries(entries)
+
+    @staticmethod
+    def _forget_session_location(profile: Profile) -> None:
+        if not profile.proxy:
+            profile.proxy_exit_ip = profile.proxy_timezone = profile.proxy_country = ""
+        profile.provider_opts.pop("checked", None)
+
+    def new_provider_session(self, profile_ids: List[str]) -> List[Profile]:
+        """Give each profile a new provider session (a new IP) and forget the old one's location."""
+        wanted = {sanitize_profile_id(pid) for pid in profile_ids}
+        changed: List[Profile] = []
+        with self._locked():
+            entries = self._read_entries()
+            for entry in entries:
+                if isinstance(entry, Profile) and entry.id in wanted:
+                    rotation = int(entry.provider_opts.get("rotation") or 0) + 1
+                    entry.provider_opts = clean_provider_opts({**entry.provider_opts, "rotation": rotation})
+                    self._forget_session_location(entry)
+                    changed.append(entry)
+            if changed:
+                self._write_entries(entries)
+        return changed
+
     @staticmethod
     def _find(entries: List[_Entry], safe_id: str) -> Optional[Profile]:
         return next((e for e in entries if isinstance(e, Profile) and e.id == safe_id), None)
@@ -311,6 +345,9 @@ class ProfileStore:
         )
         if isinstance(data.get("proxy_check"), dict) and profile.proxy:
             self._apply_inline_check(profile, data["proxy_check"])
+        if isinstance(data.get("provider_opts"), dict):
+            overrides = {k: v for k, v in data["provider_opts"].items() if k not in ("rotation", "checked")}
+            profile.provider_opts = clean_provider_opts(overrides)
         with self._locked():
             entries = self._read_entries()
             entries.insert(0, profile)
@@ -342,7 +379,29 @@ class ProfileStore:
             if isinstance(updates.get("proxy_check"), dict) and target.proxy:
                 self._apply_inline_check(target, updates["proxy_check"])
             if "proxy_id" in updates:
-                target.proxy_id = safe_ref(updates["proxy_id"])
+                new_ref = safe_ref(updates["proxy_id"])
+                if new_ref != target.proxy_id:
+                    self._forget_session_location(target)
+                target.proxy_id = new_ref
+            if isinstance(updates.get("provider_opts"), dict):
+                # Targeting/mode overrides; None clears one. The rotation counter is kept.
+                merged = dict(target.provider_opts)
+                for key, value in updates["provider_opts"].items():
+                    if key in ("rotation", "checked"):
+                        continue
+                    if value in (None, ""):
+                        merged.pop(key, None)
+                    else:
+                        merged[key] = value
+                if "country" in updates["provider_opts"] and "city" not in updates["provider_opts"]:
+                    merged.pop("city", None)  # a city belongs to its country
+                    merged.pop("region", None)
+                cleaned = clean_provider_opts(merged)
+                if {k: v for k, v in cleaned.items() if k != "checked"} != {
+                        k: v for k, v in target.provider_opts.items() if k != "checked"}:
+                    self._forget_session_location(target)
+                    cleaned.pop("checked", None)
+                target.provider_opts = cleaned
             if "start_urls" in updates:
                 target.set_start_urls(updates["start_urls"])
             if "folder" in updates:
@@ -530,7 +589,11 @@ class ProfileStore:
             fp_overrides={k: v for k, v in (data.get("fp_overrides") or {}).items() if not (copy_data and k == "screen")},
         )
         profile.fp_overrides = clean_fp_overrides(data.get("fp_overrides") or {})
-        profile.proxy_timezone, profile.proxy_country = src.proxy_timezone, src.proxy_country
+        if src.proxy:
+            profile.proxy_timezone, profile.proxy_country = src.proxy_timezone, src.proxy_country
+        # Same targeting, but a new profile id means a new provider session (its own IP).
+        profile.provider_opts = clean_provider_opts(
+            {k: v for k, v in src.provider_opts.items() if k not in ("rotation", "checked")})
         with self._locked():
             entries = self._read_entries()
             entries.insert(0, profile)

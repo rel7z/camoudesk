@@ -23,6 +23,8 @@ from camoudesk.core.geo import locale_for_country
 from camoudesk.core.launcher import SCREEN_PRESETS, gpu_options, resolve_network
 from camoudesk.core.proxy import check_proxy_config
 from camoudesk.core.proxy_parse import parse_proxy_line, parse_proxy_list
+from camoudesk.core.provider_store import ProviderStore
+from camoudesk.core.providers import evomi
 from camoudesk.core.proxy_store import ProxyStore
 from camoudesk.core.settings_store import SettingsStore
 from camoudesk.core.storage import ProfileStore
@@ -124,6 +126,7 @@ class DesktopBridgeApi:
         self.manager = manager
         self.proxies = proxies or manager.proxies
         self.settings = settings or SettingsStore(store.app_dir)
+        self.providers = ProviderStore(store.app_dir)
         self._checking: Set[str] = set()
         self._checking_lock = threading.Lock()
         self._notify_proxies: Callable[[], None] = lambda: None
@@ -163,10 +166,22 @@ class DesktopBridgeApi:
         net = resolve_network(profile, lookup)
         data = profile.to_dict()
         data.pop("proxy", None)  # contains credentials
+        provider = None
         if profile.proxy_id:
             saved = lookup.get(profile.proxy_id)
             mode = "saved"
             label = saved.name if saved else "Missing saved proxy"
+            if saved is not None and saved.provider:
+                opts = saved.profile_opts(profile)
+                provider = {
+                    "name": saved.provider.get("name", "evomi"),
+                    "product": opts.get("product", ""),
+                    "summary": evomi.summary(opts),
+                    "session": "" if opts.get("mode") == "rotating" else saved.session_for(profile),
+                    "mode": opts.get("mode", "sticky"),
+                    "country": opts.get("country", ""),
+                    "exit_ip": net.exit_ip,
+                }
         elif profile.proxy:
             mode = "custom"
             label = ProxyConfig.from_url(profile.proxy).masked_display()
@@ -178,6 +193,7 @@ class DesktopBridgeApi:
                 "proxy_label": label,
                 "proxy_parts": _proxy_parts(ProxyConfig.from_url(profile.proxy)) if profile.proxy else None,
                 "proxy_missing": net.missing_saved_proxy,
+                "provider": provider,
                 "proxy_country": net.country_code,
                 "effective_timezone": net.timezone,
                 "effective_locale": net.locale,
@@ -498,6 +514,11 @@ class DesktopBridgeApi:
         cfg = parse_proxy_line(str(line or ""), default_scheme or "http")
         parts = _proxy_parts(cfg)
         parts["password"] = unquote(cfg.password)
+        product = evomi.detect(cfg.host)
+        if product:
+            # Evomi: the password's options become provider settings (its session is per profile).
+            parts["password"], params = evomi.split_password(parts["password"])
+            parts["provider"] = evomi.opts_from_params(params, product)
         return parts
 
     @_bridge
@@ -508,6 +529,8 @@ class DesktopBridgeApi:
             saved = self.proxies.get(str(payload["proxy_id"]))
             if saved is None:
                 raise KeyError("Saved proxy not found")
+            if saved.provider:
+                return _with_locale(self._check_provider_session(saved, payload))
             result = check_proxy_config(saved.to_config())
             self.proxies.record_check(saved.id, result)
             return _with_locale(result)
@@ -519,6 +542,96 @@ class DesktopBridgeApi:
         if not cfg.is_configured:
             raise ValueError("Enter a proxy first")
         return _with_locale(check_proxy_config(cfg))
+
+    def _check_provider_session(self, saved: SavedProxy, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Check the exact session a profile will use, including unsaved targeting from the form."""
+        from types import SimpleNamespace
+
+        current = self.store.get_profile(payload["profile_id"]) if payload.get("profile_id") else None
+        stored = dict(current.provider_opts) if current is not None and current.proxy_id == saved.id else {}
+        draft = payload.get("provider_opts") if isinstance(payload.get("provider_opts"), dict) else None
+        opts = dict(stored)
+        if draft is not None:
+            opts = {k: v for k, v in stored.items() if k == "rotation"}
+            opts.update({k: v for k, v in draft.items() if v not in (None, "") and k not in ("rotation", "checked")})
+        probe = SimpleNamespace(id=current.id if current is not None else "draft", provider_opts=opts)
+        cfg = saved.config_for(probe)
+        result = check_proxy_config(cfg)
+        if current is not None and result.get("ok"):
+            net = resolve_network(current, self.proxies)
+            from camoudesk.core.launcher import session_key
+
+            if net.session_key and net.session_key == session_key(cfg):  # what it will launch with
+                self.store.record_session_check(current.id, result, net.session_key)
+        result["session"] = "" if saved.profile_opts(probe).get("mode") == "rotating" else saved.session_for(probe)
+        if current is None:
+            result["note"] = "A new profile gets its own session (and IP) once it is created."
+        return result
+
+    @_bridge
+    def profiles_new_ip(self, profile_ids: List[str]) -> Dict[str, Any]:
+        """New provider session (new IP) for stopped profiles; running ones are skipped."""
+        ids = [pid for pid in (profile_ids or []) if not self.manager.is_running(pid)]
+        lookup = _ProxyLookup(self.proxies.list())
+        eligible = [pid for pid in ids
+                    if (prof := self.store.get_profile(pid)) is not None and prof.proxy_id
+                    and (sp := lookup.get(prof.proxy_id)) is not None and sp.provider]
+        changed = self.store.new_provider_session(eligible)
+        return {"changed": len(changed), "skipped_running": len(profile_ids or []) - len(ids),
+                "skipped_no_provider": len(ids) - len(eligible)}
+
+    # ------------------------------------------------------------------ provider integrations
+
+    @_bridge
+    def providers_status(self) -> Dict[str, Any]:
+        return self.providers.status()
+
+    @_bridge
+    def providers_set_key(self, name: str, api_key: str) -> Dict[str, Any]:
+        """Save an API key after Evomi accepts it (it is never sent back to the page)."""
+        if name != "evomi":
+            raise ValueError(f"Unknown provider '{name}'")
+        key = str(api_key or "").strip()
+        try:
+            targets = evomi.fetch_targets(key, "rpc")
+        except evomi.EvomiApiError as exc:
+            raise ValueError(str(exc)) from exc
+        self.providers.set_api_key(name, key)
+        self.providers.store_targets(name, "rpc", targets)
+        return {**self.providers.status()[name], "countries": len(targets["countries"])}
+
+    @_bridge
+    def providers_clear_key(self, name: str) -> Dict[str, Any]:
+        self.providers.clear_api_key(name)
+        return self.providers.status()
+
+    @_bridge
+    def providers_targets(self, name: str = "evomi", product: str = "rpc", refresh: bool = False) -> Dict[str, Any]:
+        """Countries, regions and cities for the pickers: from Evomi's API with a key (cached a
+        day), otherwise every country code CamouDesk knows, with free-text regions/cities."""
+        if name != "evomi":
+            raise ValueError(f"Unknown provider '{name}'")
+        product = product if product in evomi.PRODUCTS else "rp"
+        key = self.providers.api_key(name)
+        if key:
+            cached = None if refresh else self.providers.cached_targets(name, product)
+            if cached is not None:
+                return {**cached, "source": "evomi"}
+            try:
+                targets = evomi.fetch_targets(key, product)
+                self.providers.store_targets(name, product, targets)
+                return {**targets, "source": "evomi"}
+            except evomi.EvomiApiError as exc:
+                stale = self.providers.cached_targets(name, product, max_age=float("inf"))
+                if stale is not None:
+                    return {**stale, "source": "evomi", "warning": str(exc)}
+                fallback_warning = str(exc)
+        else:
+            fallback_warning = ""
+        from camoudesk.core.geo import _territory_languages
+
+        countries = sorted(_territory_languages().keys())
+        return {"countries": countries, "regions": {}, "cities": {}, "source": "builtin", "warning": fallback_warning}
 
     # ------------------------------------------------------------------ cookies
 

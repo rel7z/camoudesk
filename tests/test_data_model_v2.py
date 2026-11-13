@@ -162,7 +162,7 @@ class TestLaunchNetwork(TempDirCase):
     def test_first_launch_checks_proxy_and_caches_location(self) -> None:
         prof = self.store.create_profile({"name": "Auto", "proxy": "http://10.0.0.1:8080"})
         fake = {"ok": True, "ip": "203.0.113.5", "timezone": "Europe/Paris", "country_code": "FR"}
-        with patch("camoudesk.manager.process_manager.check_proxy_config", return_value=fake) as chk:
+        with patch("camoudesk.core.proxy.check_proxy_config", return_value=fake) as chk:
             self.assertTrue(self.manager.launch(prof.id)["ok"])
             net = self.manager.networks[-1]
             self.assertEqual((net.timezone, net.locale, net.exit_ip), ("Europe/Paris", "fr-FR", "203.0.113.5"))
@@ -173,7 +173,7 @@ class TestLaunchNetwork(TempDirCase):
 
     def test_failed_check_still_launches_with_warning(self) -> None:
         prof = self.store.create_profile({"name": "Dead", "proxy": "http://10.0.0.1:8080"})
-        with patch("camoudesk.manager.process_manager.check_proxy_config", return_value={"ok": False, "error": "timed out"}):
+        with patch("camoudesk.core.proxy.check_proxy_config", return_value={"ok": False, "error": "timed out"}):
             self.assertTrue(self.manager.launch(prof.id)["ok"])
         self.assertIn("Proxy check failed", self.manager.get_status(prof.id)["warning"])
 

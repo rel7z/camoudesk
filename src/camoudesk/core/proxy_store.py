@@ -49,6 +49,12 @@ class ProxyStore:
     def _new_id() -> str:
         return f"px_{int(time.time())}_{os.urandom(3).hex()}"
 
+    @staticmethod
+    def _dedupe_key(proxy: SavedProxy) -> Tuple[Any, ...]:
+        # One provider account can be saved once per targeting (e.g. "Evomi US" and "Evomi DE").
+        target = tuple(proxy.provider.get(k, "") for k in ("country", "region", "city", "mode")) if proxy.provider else ()
+        return (proxy.type, proxy.host, proxy.port, proxy.username, *target)
+
     def list(self) -> List[SavedProxy]:
         with locked(self.lock_path):
             return [e for e in self._read() if isinstance(e, SavedProxy)]
@@ -74,7 +80,7 @@ class ProxyStore:
             if current is None:
                 raise KeyError(f"Proxy '{proxy_id}' not found")
             merged = current.to_dict()
-            for key in ("name", "type", "host", "port", "username", "change_ip_url", "notes", "tags"):
+            for key in ("name", "type", "host", "port", "username", "change_ip_url", "notes", "tags", "provider"):
                 if key in data:
                     merged[key] = data[key]
             # An empty password from the UI means "unchanged" (the UI never receives passwords).
@@ -82,10 +88,11 @@ class ProxyStore:
                 merged["password"] = data["password"]
             if data.get("clear_password"):
                 merged["password"] = ""
-            connection_changed = any(merged[k] != getattr(current, k) for k in ("type", "host", "port", "username", "password"))
-            if connection_changed:
-                merged["last_check"] = None  # results belong to the old endpoint
             updated = SavedProxy.from_dict(merged)
+            connection_changed = any(getattr(updated, k) != getattr(current, k)
+                                     for k in ("type", "host", "port", "username", "password", "provider"))
+            if connection_changed:
+                updated.last_check = ProxyCheck()  # results belong to the old endpoint
             entries[entries.index(current)] = updated
             self._write(entries)
             return updated
@@ -114,14 +121,16 @@ class ProxyStore:
         created: List[SavedProxy] = []
         with locked(self.lock_path):
             entries = self._read()
-            existing = {
-                (e.type, e.host, e.port, e.username) for e in entries if isinstance(e, SavedProxy)
-            }
+            existing = {self._dedupe_key(e) for e in entries if isinstance(e, SavedProxy)}
             for i, cfg in enumerate(configs, start=1):
                 proxy = SavedProxy.from_config(
                     self._new_id() + f"{i:03d}"[-3:], f"{name_prefix}{cfg.host}:{cfg.port}", cfg
                 )
-                key = (proxy.type, proxy.host, proxy.port, proxy.username)
+                if proxy.provider:
+                    proxy.name = f"{name_prefix}Evomi " + " ".join(
+                        filter(None, [proxy.provider.get("country"), proxy.provider.get("city")])) or proxy.name
+                    proxy.name = proxy.name.strip()
+                key = self._dedupe_key(proxy)
                 if key in existing:
                     continue  # skip duplicates of already-saved proxies
                 existing.add(key)

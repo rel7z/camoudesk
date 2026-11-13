@@ -27,8 +27,7 @@ import threading
 import time
 from typing import IO, Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from camoudesk.core.launcher import Network, build_launch_spec, minimal_env, resolve_network
-from camoudesk.core.proxy import check_proxy_config
+from camoudesk.core.launcher import Network, build_launch_spec, ensure_location, minimal_env, resolve_network
 from camoudesk.core.proxy_forwarder import ProxyForwarder
 from camoudesk.core.proxy_store import ProxyStore
 from camoudesk.core.storage import ProfileStore, RegistryCorruptError
@@ -542,19 +541,7 @@ class ProcessManager:
 
     def _check_and_resolve(self, profile: Profile, network: Network) -> Network:
         """First launch of a proxy profile with "auto" tz/locale: learn the exit location now."""
-        result = check_proxy_config(network.proxy, timeout=8.0)
-        if result.get("ok"):
-            if network.source == "saved":
-                self.proxies.record_check(network.proxy_id, result)
-            else:
-                self.store.record_inline_check(profile.id, result)
-            fresh = self.store.get_profile(profile.id) or profile
-            return resolve_network(fresh, self.proxies)
-        self._proxy_logger(profile.id)(
-            f"Proxy check failed ({result.get('error', 'unknown error')}); timezone/locale could not be "
-            "matched to the proxy. The browser still routes only through the proxy."
-        )
-        return network
+        return ensure_location(profile, network, self.store, self.proxies, self._proxy_logger(profile.id))
 
     def _launch_impl(
         self,
@@ -590,6 +577,11 @@ class ProcessManager:
             return {"ok": False, "error": "This profile's saved proxy was deleted; choose another proxy or Direct."}
         if network.needs_check:
             network = self._check_and_resolve(profile, network)
+        if network.rotating:
+            self._proxy_logger(profile.id)(
+                "Rotating proxy session: the exit IP changes on every request, so sites may see this "
+                "profile jump between IPs. Use a sticky or hard session for logins."
+            )
 
         forwarder: Optional[ProxyForwarder] = None
         if chosen == MODE_DIRECT and network.proxy.has_credentials:

@@ -34,6 +34,28 @@ def safe_ref(value: Any) -> str:
     return text if _SAFE_ID_RE.fullmatch(text) else ""
 
 
+def clean_provider_opts(value: Any) -> Dict[str, Any]:
+    """Per-profile provider settings: session rotation counter, targeting/mode overrides, and the
+    key of the session its cached exit location belongs to."""
+    from camoudesk.core.providers import evomi
+
+    raw = value if isinstance(value, dict) else {}
+    try:
+        out: Dict[str, Any] = evomi.clean_opts(raw, partial=True)
+    except ValueError:
+        out = {}
+    try:
+        rotation = int(raw.get("rotation") or 0)
+    except (TypeError, ValueError):
+        rotation = 0
+    if 0 < rotation < 10**9:
+        out["rotation"] = rotation
+    checked = str(raw.get("checked") or "")
+    if re.fullmatch(r"[0-9a-f]{16}", checked):
+        out["checked"] = checked
+    return out
+
+
 def normalize_country(value: Any) -> str:
     text = str(value or "").strip().upper()
     return text if re.fullmatch(r"[A-Z]{2}", text) else ""
@@ -311,6 +333,7 @@ class Profile:
     folder: str = ""
     tags: list[str] = field(default_factory=list)
     fp_overrides: Dict[str, Any] = field(default_factory=dict)
+    provider_opts: Dict[str, Any] = field(default_factory=dict)  # see clean_provider_opts
     fingerprint_summary: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: time.strftime("%Y-%m-%d %H:%M"))
     last_used_at: Optional[str] = None
@@ -342,15 +365,17 @@ class Profile:
             urls = [raw.get("startup_url") or raw.get("target_url") or DEFAULT_STARTUP_URL]
         start_urls = clean_start_urls(urls, strict=False)
         overrides = raw.get("fp_overrides")
+        proxy_id = safe_ref(raw.get("proxy_id"))
+        keep_exit = bool(proxy_raw or proxy_id)  # inline proxy, or a provider session's last check
         return cls(
             id=profile_id,
             name=str(raw.get("name") or profile_id).strip() or profile_id,
             os=os_target,
             proxy=proxy_raw,
-            proxy_exit_ip=normalize_ip(raw.get("proxy_exit_ip")) if proxy_raw else "",
-            proxy_timezone=str(raw.get("proxy_timezone") or "").strip() if proxy_raw else "",
-            proxy_country=normalize_country(raw.get("proxy_country")) if proxy_raw else "",
-            proxy_id=safe_ref(raw.get("proxy_id")),
+            proxy_exit_ip=normalize_ip(raw.get("proxy_exit_ip")) if keep_exit else "",
+            proxy_timezone=str(raw.get("proxy_timezone") or "").strip() if keep_exit else "",
+            proxy_country=normalize_country(raw.get("proxy_country")) if keep_exit else "",
+            proxy_id=proxy_id,
             timezone=str(raw.get("timezone") or "auto").strip(),
             locale=str(raw.get("locale") or "auto").strip(),
             startup_url=start_urls[0] if start_urls else "",
@@ -361,6 +386,7 @@ class Profile:
             folder=str(raw.get("folder") or "").strip()[:80],
             tags=clean_tags(raw.get("tags")),
             fp_overrides=clean_fp_overrides(overrides),
+            provider_opts=clean_provider_opts(raw.get("provider_opts")),
             fingerprint_summary=dict(raw.get("fingerprint_summary") or {}),
             created_at=str(raw.get("created_at") or time.strftime("%Y-%m-%d %H:%M")),
             last_used_at=raw.get("last_used_at"),

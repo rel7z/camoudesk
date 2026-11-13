@@ -14,6 +14,7 @@ Endpoints (JSON in and out; errors are ``{"error": "..."}`` with a 4xx status)::
     POST   /v1/profiles/{id}/start           {"headless": false}
     POST   /v1/profiles/{id}/stop
     GET    /v1/profiles/{id}/status
+    POST   /v1/profiles/{id}/new-ip          new provider session (Evomi), stopped profiles only
     GET    /v1/proxies
     POST   /v1/proxies/{id}/check
 
@@ -54,6 +55,7 @@ class ApiServer:
             ("POST", re.compile(rf"^/v1/profiles/{_ID}/start$"), self._start),
             ("POST", re.compile(rf"^/v1/profiles/{_ID}/stop$"), lambda m, b: self._call("profiles_stop", m[1])),
             ("GET", re.compile(rf"^/v1/profiles/{_ID}/status$"), self._status),
+            ("POST", re.compile(rf"^/v1/profiles/{_ID}/new-ip$"), lambda m, b: self._call("profiles_new_ip", [m[1]])),
             ("GET", re.compile(r"^/v1/proxies$"), lambda m, b: self._call("proxies_list")),
             ("POST", re.compile(rf"^/v1/proxies/{_ID}/check$"), lambda m, b: self._call("proxies_check", m[1])),
         ]

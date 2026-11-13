@@ -15,9 +15,10 @@ there sends SIGTERM to this script. A profile already open elsewhere is refused.
 from contextlib import contextmanager
 import json
 import os
+import sys
 from typing import Any, Iterator, List, Optional
 
-from camoudesk.core.launcher import profile_camoufox_kwargs, resolve_network
+from camoudesk.core.launcher import ensure_location, profile_camoufox_kwargs, resolve_network
 from camoudesk.core.proxy_store import ProxyStore
 from camoudesk.core.storage import ProfileStore
 from camoudesk.models.profile import Profile
@@ -72,9 +73,13 @@ def open_profile(
         raise ProfileBusyError("This profile is in the trash; restore it first.")
     if _running_elsewhere(store, profile.id):
         raise ProfileBusyError("This profile is already running; stop it first.")
-    network = resolve_network(profile, ProxyStore(store.app_dir))
+    proxies = ProxyStore(store.app_dir)
+    network = resolve_network(profile, proxies)
     if network.missing_saved_proxy:
         raise RuntimeError("This profile's saved proxy was deleted; choose another proxy or Direct.")
+    # Same pre-launch location check as the app, so "auto" timezone never falls back to this Mac's.
+    network = ensure_location(profile, network, store, proxies, lambda msg: print(f"[CamouDesk] {msg}", file=sys.stderr))
+    profile = store.get_profile(profile.id) or profile
     kwargs, _ = profile_camoufox_kwargs(profile, store, network, headless=headless)
     kwargs.update(camoufox_overrides)
 

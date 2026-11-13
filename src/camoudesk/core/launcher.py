@@ -9,7 +9,7 @@ Playwright driver or long-lived Python worker is needed for interactive browsing
 from dataclasses import dataclass
 import ipaddress
 import os
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from camoudesk.core import search_engine
 from camoudesk.core.fingerprint import ensure_profile_fingerprint
@@ -139,6 +139,15 @@ class Network:
     locale: str = ""  # effective locale; "" = Camoufox/host default
     needs_check: bool = False  # proxy set + auto tz/locale requested, but no exit data yet
     missing_saved_proxy: bool = False  # proxy_id points at a deleted saved proxy
+    session_key: str = ""  # provider proxies: identifies the profile's own session (per-profile checks)
+    rotating: bool = False  # provider session gives a new IP per request
+
+
+def session_key(proxy: ProxyConfig) -> str:
+    """Short, non-reversible id of a provider session's exact credentials (for cached checks)."""
+    import hashlib
+
+    return hashlib.sha256(proxy.raw_url.encode()).hexdigest()[:16]
 
 
 def resolve_network(profile: Profile, proxies: Any = None) -> Network:
@@ -150,13 +159,22 @@ def resolve_network(profile: Profile, proxies: Any = None) -> Network:
     from camoudesk.core.geo import locale_for_country
 
     proxy, source, exit_ip, tz, cc = ProxyConfig(), "none", "", "", ""
+    key, rotating, always_check = "", False, False
     if profile.proxy_id:
         saved = proxies.get(profile.proxy_id) if proxies is not None else None
         if saved is None:
             return Network(proxy=ProxyConfig(), source="saved", proxy_id=profile.proxy_id, missing_saved_proxy=True)
-        proxy, source = saved.to_config(), "saved"
-        chk = saved.last_check
-        if chk.ok:
+        proxy, source = saved.config_for(profile), "saved"
+        if saved.provider:
+            # The profile's own session: its location is cached on the profile, and re-checked at
+            # every launch because a session's IP can change (lifetime over, rotating, IP offline).
+            key = session_key(proxy)
+            rotating = saved.profile_opts(profile).get("mode") == "rotating"
+            always_check = True
+            if profile.provider_opts.get("checked") == key:
+                exit_ip, tz, cc = profile.proxy_exit_ip, profile.proxy_timezone, profile.proxy_country
+        elif saved.last_check.ok:
+            chk = saved.last_check
             exit_ip, tz, cc = chk.ip, chk.timezone, chk.country_code
     elif profile.proxy:
         proxy, source = ProxyConfig.from_url(profile.proxy), "inline"
@@ -166,12 +184,12 @@ def resolve_network(profile: Profile, proxies: Any = None) -> Network:
     needs_check = False
     if profile.timezone == AUTO:
         timezone = tz if has_proxy else ""
-        needs_check |= has_proxy and not tz
+        needs_check |= has_proxy and (always_check or not tz)
     else:
         timezone = profile.timezone
     if profile.locale == AUTO:
         locale = (locale_for_country(cc) or "") if has_proxy else ""
-        needs_check |= has_proxy and not cc
+        needs_check |= has_proxy and (always_check or not cc)
     else:
         locale = profile.locale
     return Network(
@@ -183,7 +201,36 @@ def resolve_network(profile: Profile, proxies: Any = None) -> Network:
         timezone=timezone,
         locale=locale,
         needs_check=needs_check,
+        session_key=key,
+        rotating=rotating,
     )
+
+
+def ensure_location(profile: Profile, network: Network, store: Any, proxies: Any,
+                    log: Optional[Callable[[str], None]] = None) -> Network:
+    """Before a launch: if "auto" timezone/locale needs the proxy's exit location, check it now.
+
+    Shared by every launch path (GUI direct/worker and the SDK) so none of them falls back to the
+    host's timezone. Provider sessions are cached on the profile; other proxies where they live.
+    """
+    if not network.needs_check:
+        return network
+    from camoudesk.core.proxy import check_proxy_config
+
+    result = check_proxy_config(network.proxy, timeout=8.0)
+    if result.get("ok"):
+        if network.session_key:
+            store.record_session_check(profile.id, result, network.session_key)
+        elif network.source == "saved":
+            proxies.record_check(network.proxy_id, result)
+        else:
+            store.record_inline_check(profile.id, result)
+        fresh = store.get_profile(profile.id) or profile
+        return resolve_network(fresh, proxies)
+    if log is not None:
+        log(f"Proxy check failed ({result.get('error', 'unknown error')}); timezone/locale could not be "
+            "matched to the proxy. The browser still routes only through the proxy.")
+    return network
 
 
 def has_proxy_credentials(profile: Profile, proxies: Any = None) -> bool:
