@@ -5,7 +5,10 @@ import { closeDrawer, refreshProfiles, saveProfile, stopProfile } from "../lib/a
 import { confirmDialog, getState, setState, toast, useStore } from "../lib/store.js";
 import { LOCALES, OS_LABELS, copyText, gpuLabel, timezones } from "../lib/util.js";
 import { Icon } from "./icons.js";
+import { EvomiFields } from "./Evomi.js";
 import { Button, CountryChip, Field, IconButton, Segmented, Select, Tabs, TextArea, TextInput, Toggle } from "./ui.js";
+
+const PROVIDER_KEYS = ["country", "region", "city", "mode", "lifetime"];
 
 const TABS = [
   { value: "general", label: "General", icon: "edit" },
@@ -27,6 +30,8 @@ function formFrom(row, defaults) {
     start_urls: (src.start_urls || []).join("\n"),
     proxy_mode: row?.proxy_mode || "none",
     proxy_id: row?.proxy_id || "",
+    // Per-profile provider overrides (Evomi): "" / missing = same as the saved proxy.
+    provider_opts: Object.fromEntries(PROVIDER_KEYS.filter((k) => row?.provider_opts?.[k] != null).map((k) => [k, row.provider_opts[k]])),
     p_type: parts.type || "http",
     p_host: parts.host || "",
     p_port: parts.port ? String(parts.port) : "",
@@ -69,7 +74,11 @@ function toPayload(f, check) {
       ...(f.fp_screen ? { screen: f.fp_screen } : {}),
     },
   };
-  if (f.proxy_mode === "saved") payload.proxy_id = f.proxy_id;
+  if (f.proxy_mode === "saved") {
+    payload.proxy_id = f.proxy_id;
+    // Send every key: an empty one clears that override (the saved proxy's value applies).
+    payload.provider_opts = Object.fromEntries(PROVIDER_KEYS.map((k) => [k, f.provider_opts?.[k] === "" ? null : f.provider_opts?.[k] ?? null]));
+  }
   if (f.proxy_mode === "custom") {
     payload.proxy_parts = { type: f.p_type, host: f.p_host.trim(), port: f.p_port.trim(), username: f.p_user, password: f.p_pass };
     if (check && check.ok) payload.proxy_check = check;
@@ -111,7 +120,7 @@ function NetworkTab({ f, set, row, disabled, check, setCheck }) {
     setCheck({ pending: true });
     try {
       const payload = f.proxy_mode === "saved"
-        ? { proxy_id: f.proxy_id }
+        ? { proxy_id: f.proxy_id, profile_id: row?.id, provider_opts: toPayload(f).provider_opts }
         : { proxy_parts: toPayload(f).proxy_parts, profile_id: row?.id };
       const res = await call("proxy_test", payload);
       setCheck(res);
@@ -123,7 +132,8 @@ function NetworkTab({ f, set, row, disabled, check, setCheck }) {
   const saved = proxies.find((p) => p.id === f.proxy_id);
   const autoTz = f.timezone === "auto";
   const autoLocale = f.locale === "auto";
-  const effective = (check && check.ok) ? check : (saved?.last_check?.ok ? saved.last_check : null);
+  // A provider proxy's own check used another session (another IP): only this profile's counts.
+  const effective = (check && check.ok) ? check : (saved?.last_check?.ok && !saved?.provider_summary ? saved.last_check : null);
   return html`<div class="form">
     <${Field} label="Proxy" wide>
       <${Segmented} value=${f.proxy_mode} disabled=${disabled} onChange=${(proxy_mode) => { set({ proxy_mode }); setCheck(null); }} options=${[
@@ -137,9 +147,12 @@ function NetworkTab({ f, set, row, disabled, check, setCheck }) {
         ? html`<${Field} label="Saved proxy" wide hint=${saved?.last_check?.at ? `Last checked ${saved.last_check.at}` : "Not checked yet"}>
             <${Select} value=${f.proxy_id} disabled=${disabled} onChange=${(proxy_id) => { set({ proxy_id }); setCheck(null); }}
               options=${[{ value: "", label: "Choose a proxy…" }, ...proxies.map((p) => ({
-                value: p.id, label: `${p.name} — ${p.type.toUpperCase()} ${p.host}:${p.port}${p.last_check?.country_code ? " · " + p.last_check.country_code : ""}` }))]} />
+                value: p.id, label: `${p.name} — ${p.provider_summary ? `Evomi ${p.provider_summary}` : `${p.type.toUpperCase()} ${p.host}:${p.port}${p.last_check?.country_code ? " · " + p.last_check.country_code : ""}`}` }))]} />
           <//>`
         : html`<p class="note"><${Icon} name="info" /> No saved proxies yet. Add them on the Proxies page, or use Custom.</p>`
+      : null}
+    ${f.proxy_mode === "saved" && saved?.provider_summary
+      ? html`<${ProviderPanel} f=${f} set=${set} row=${row} saved=${saved} disabled=${disabled} setCheck=${setCheck} />`
       : null}
     ${f.proxy_mode === "custom"
       ? html`
@@ -183,6 +196,39 @@ function NetworkTab({ f, set, row, disabled, check, setCheck }) {
         <${TextInput} value=${f.locale} list="locale-list" disabled=${disabled} onInput=${(locale) => set({ locale })} />
         <datalist id="locale-list"><option value="auto">Auto (match network)</option>${LOCALES.map((l) => html`<option value=${l} />`)}</datalist>
       <//>
+    </div>
+  </div>`;
+}
+
+function ProviderPanel({ f, set, row, saved, disabled, setCheck }) {
+  const [busy, setBusy] = useState(false);
+  const sameProxy = row && row.proxy_id === saved.id && row.provider;
+  const newIp = async () => {
+    setBusy(true);
+    try {
+      const res = await call("profiles_new_ip", [row.id]);
+      toast(res.changed ? "New session: this profile gets a new IP" : "Stop the browser first", res.changed ? "success" : "error");
+      setCheck(null);
+      await refreshProfiles();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+    setBusy(false);
+  };
+  return html`<div class="provider-box">
+    <div class="provider-head">
+      <strong>Evomi for this profile</strong>
+      <span class="muted small">${saved.provider_summary}</span>
+    </div>
+    <${EvomiFields} value=${f.provider_opts} base=${saved.provider} product=${saved.provider.product || "rp"}
+      disabled=${disabled} onChange=${(provider_opts) => { set({ provider_opts }); setCheck(null); }} />
+    <div class="session-line">
+      ${sameProxy
+        ? row.provider.session
+          ? html`<span class="muted small">Session <span class="mono">${row.provider.session}</span>${row.provider.exit_ip ? html` · last IP <span class="mono">${row.provider.exit_ip}</span>` : ""}</span>
+              <${Button} size="sm" icon="refresh" busy=${busy} disabled=${disabled} onClick=${newIp}>New IP<//>`
+          : html`<span class="muted small">Rotating: no session, a new IP on every request.</span>`
+        : html`<span class="muted small">${row ? "Save to create this profile's own session." : "The profile gets its own session (and IP) when it is created."}</span>`}
     </div>
   </div>`;
 }

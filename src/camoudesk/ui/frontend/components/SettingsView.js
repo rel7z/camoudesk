@@ -5,6 +5,7 @@ import { applyTheme, refreshSettings } from "../lib/actions.js";
 import { confirmDialog, setState, toast, useStore } from "../lib/store.js";
 import { LOCALES, OS_LABELS, copyText, timezones } from "../lib/util.js";
 import { Icon } from "./icons.js";
+import { forgetEvomiTargets } from "./Evomi.js";
 import { Button, Field, Segmented, Select, TextArea, TextInput, Toggle } from "./ui.js";
 
 const SEARCH_ENGINES = [
@@ -21,6 +22,50 @@ function Section({ title, desc, children }) {
     <div class="settings-intro"><h2>${title}</h2>${desc ? html`<p class="muted">${desc}</p>` : null}</div>
     <div class="settings-body">${children}</div>
   </section>`;
+}
+
+function IntegrationsSection() {
+  const [st, setSt] = useState(null);
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    try { setSt((await call("providers_status")).evomi); } catch (err) { toast(err.message, "error"); }
+  };
+  useEffect(() => { load(); }, []);
+  if (!st) return null;
+  const save = async () => {
+    setBusy(true);
+    try {
+      const res = await call("providers_set_key", "evomi", key.trim());
+      setKey("");
+      forgetEvomiTargets();
+      toast(`Evomi connected: ${res.countries} countries available`, "success");
+      await load();
+    } catch (err) {
+      toast(err.message, "error", 7000);
+    }
+    setBusy(false);
+  };
+  const remove = async () => {
+    const ok = await confirmDialog({ title: "Remove the Evomi API key?", message: "Proxies keep working. Region and city lists fall back to typing them in.", confirmLabel: "Remove", danger: true });
+    if (!ok) return;
+    await call("providers_clear_key", "evomi");
+    forgetEvomiTargets();
+    await load();
+  };
+  return html`<${Section} title="Integrations" desc="Evomi residential proxies: paste your Evomi proxy on the Proxies page and every profile using it gets its own session, so its own IP. The API key is optional; it only loads Evomi's official country, region and city lists.">
+    <div class="kv-card">
+      <span>Evomi API key</span>
+      <strong>${st.has_key ? html`<span class="text-ok">Connected</span>${st.saved_at ? ` · saved ${st.saved_at}` : ""}` : "Not set"}</strong>
+    </div>
+    <${Field} label=${st.has_key ? "Replace API key" : "API key"} wide hint="From the Evomi dashboard (Settings → API). Stored on this Mac only and never shown again.">
+      <div class="inline">
+        <${TextInput} type="password" value=${key} onInput=${setKey} placeholder=${st.has_key ? "••••••••" : "Paste your Evomi API key"} />
+        <${Button} kind="primary" busy=${busy} disabled=${!key.trim()} onClick=${save}>Verify & save<//>
+        ${st.has_key ? html`<${Button} onClick=${remove}>Remove<//>` : null}
+      </div>
+    <//>
+  <//>`;
 }
 
 function ApiSection() {
@@ -151,6 +196,7 @@ export function SettingsView() {
       <//>
     <//>
 
+    <${IntegrationsSection} />
     <${ApiSection} />
 
     <${Section} title="Appearance">

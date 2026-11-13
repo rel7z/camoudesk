@@ -5,6 +5,7 @@ import { refreshProfiles, refreshProxies } from "../lib/actions.js";
 import { confirmDialog, getState, toast, useStore } from "../lib/store.js";
 import { relativeTime } from "../lib/util.js";
 import { Icon } from "./icons.js";
+import { EvomiFields, evomiProduct, isEvomiHost } from "./Evomi.js";
 import { Button, CountryChip, Empty, Field, IconButton, Menu, Select, TextArea, TextInput } from "./ui.js";
 
 const TYPE_OPTIONS = [
@@ -33,7 +34,9 @@ function ProxyEditor({ proxy, onClose }) {
   const [f, setF] = useState({
     name: proxy?.name || "", type: proxy?.type || "http", host: proxy?.host || "", port: proxy?.port ? String(proxy.port) : "",
     username: proxy?.username || "", password: "", change_ip_url: proxy?.change_ip_url || "", notes: proxy?.notes || "",
+    provider: proxy?.provider && Object.keys(proxy.provider).length ? proxy.provider : { mode: "sticky", lifetime: 1440 },
   });
+  const evomi = isEvomiHost(f.host);
   const [paste, setPaste] = useState("");
   const [saving, setSaving] = useState(false);
   const set = (patch) => setF((prev) => ({ ...prev, ...patch }));
@@ -42,7 +45,8 @@ function ProxyEditor({ proxy, onClose }) {
   const fill = async () => {
     try {
       const parts = await call("proxy_parse", paste.trim(), f.type);
-      set({ type: parts.type, host: parts.host, port: String(parts.port), username: parts.username, password: parts.password });
+      set({ type: parts.type, host: parts.host, port: String(parts.port), username: parts.username, password: parts.password,
+        ...(parts.provider ? { provider: parts.provider } : {}) });
       setPaste("");
     } catch (err) {
       toast(err.message, "error");
@@ -53,7 +57,8 @@ function ProxyEditor({ proxy, onClose }) {
     if (saving) return;
     setSaving(true);
     try {
-      const data = { ...f, port: Number(f.port) || f.port };
+      const { provider, ...rest } = f;
+      const data = { ...rest, port: Number(f.port) || f.port, ...(evomi ? { provider } : {}) };
       const row = isNew ? await call("proxies_create", data) : await call("proxies_update", proxy.id, data);
       toast(isNew ? `Saved "${row.name}"` : "Proxy updated", "success");
       await refreshProxies();
@@ -90,9 +95,15 @@ function ProxyEditor({ proxy, onClose }) {
             <${TextInput} type="password" value=${f.password} disabled=${f.type === "socks4"} onInput=${(password) => set({ password })} placeholder=${proxy?.has_password ? "••••••••" : ""} />
           <//>
         </div>
-        <${Field} label="Change-IP URL" wide hint="Optional. For rotating proxies: the provider link that switches the exit IP.">
-          <${TextInput} mono value=${f.change_ip_url} onInput=${(change_ip_url) => set({ change_ip_url })} placeholder="https://provider.example/rotate?key=…" />
-        <//>
+        ${evomi
+          ? html`<div class="provider-box">
+              <div class="provider-head"><strong>Evomi ${evomiProduct(f.host) === "rpc" ? "Core Residential" : "Residential"}</strong>
+                <span class="muted small">Every profile gets its own session, so its own IP</span></div>
+              <${EvomiFields} value=${f.provider} product=${evomiProduct(f.host)} onChange=${(provider) => set({ provider })} />
+            </div>`
+          : html`<${Field} label="Change-IP URL" wide hint="Optional. For rotating proxies: the provider link that switches the exit IP.">
+              <${TextInput} mono value=${f.change_ip_url} onInput=${(change_ip_url) => set({ change_ip_url })} placeholder="https://provider.example/rotate?key=…" />
+            <//>`}
         <${Field} label="Notes" wide><${TextArea} rows=${2} value=${f.notes} onInput=${(notes) => set({ notes })} /><//>
       </div></div>
       <footer class="drawer-foot">
@@ -257,12 +268,13 @@ export function ProxiesView() {
         : html`<table class="table">
             <thead><tr><th>Name</th><th>Status</th><th>Address</th><th>Exit location</th><th>Profiles</th><th class="col-actions" /></tr></thead>
             <tbody>${filtered.map((p) => html`<tr key=${p.id} onClick=${(e) => !e.target.closest("button, .menu") && setEditing(p)}>
-              <td class="col-name"><div class="name">${p.name}</div><div class="sub">${p.notes || ""}</div></td>
+              <td class="col-name"><div class="name-line"><span class="name">${p.name}</span>${p.provider_summary ? html`<span class="pill pill-provider">Evomi</span>` : null}</div>
+                <div class="sub">${p.provider_summary || p.notes || ""}</div></td>
               <td class="nowrap"><${ProxyStatus} p=${p} /><div class="sub">${p.last_check?.at ? `Checked ${relativeTime(p.last_check.at).replace(/^Just now$/, "just now")}` : ""}</div></td>
               <td class="nowrap"><span class="pill">${p.type.toUpperCase()}</span> <span class="mono">${p.host}:${p.port}</span>${p.has_password ? html` <span class="muted small" title="Uses a username and password"><${Icon} name="shield" size=${12} /></span>` : null}</td>
               <td>${p.last_check?.ok
                 ? html`<div class="proxy-cell"><${CountryChip} code=${p.last_check.country_code} /><span class="mono">${p.last_check.ip}</span></div>
-                    <div class="sub">${[p.last_check.city, p.last_check.timezone].filter(Boolean).join(" · ")}</div>`
+                    <div class="sub">${p.provider_summary ? "Sample IP · each profile gets its own" : [p.last_check.city, p.last_check.timezone].filter(Boolean).join(" · ")}</div>`
                 : p.last_check?.error ? html`<span class="text-err small" title=${p.last_check.error}>${p.last_check.error.slice(0, 48)}</span>` : html`<span class="muted">—</span>`}</td>
               <td>${p.used_by || html`<span class="muted">0</span>`}</td>
               <td class="col-actions">

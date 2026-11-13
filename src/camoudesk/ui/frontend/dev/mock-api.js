@@ -23,7 +23,25 @@ const proxies = [
   { id: "px_2", name: "DE Mobile", type: "socks5", host: "de.mobile.example", port: 1080, username: "u", password: "", has_password: true,
     change_ip_url: "https://de.mobile.example/rotate", notes: "", tags: [], display: "socks5://u:***@de.mobile.example:1080",
     last_check: { ok: true, ip: "203.0.113.77", country: "Germany", country_code: "DE", city: "Berlin", timezone: "Europe/Berlin", latency_ms: 140, at: ago(300) } },
+  { id: "px_3", name: "Evomi", type: "http", host: "core-residential.evomi.com", port: 1000, username: "demo", password: "", has_password: true,
+    change_ip_url: "", notes: "", tags: [], display: "http://demo:***@core-residential.evomi.com:1000",
+    provider: { name: "evomi", product: "rpc", mode: "sticky", lifetime: 60, extra: {} }, provider_summary: "Core Residential · Sticky 1h",
+    last_check: { ok: true, ip: "198.51.100.140", country: "United States", country_code: "US", city: "Phoenix", timezone: "America/Phoenix", latency_ms: 390, at: ago(12) } },
 ];
+
+const EVOMI_TARGETS = { countries: ["BR", "DE", "FR", "GB", "ID", "JP", "US"], regions: { US: ["arizona", "california", "new.york", "texas"] },
+  cities: { US: ["dallas", "los.angeles", "new.york", "phoenix"], DE: ["berlin", "munich"] }, source: "builtin" };
+let evomiKey = false;
+const sessionOf = (p) => (p.id.replace(/\W/g, "") + "k3x9q2m7ab").slice(-4) + String(p.provider_opts?.rotation || 0) + "q2m7a";
+function withProvider(p) {
+  const px = proxies.find((x) => x.id === p.proxy_id);
+  if (!px || !px.provider) { p.provider = null; return p; }
+  const o = { ...px.provider, ...Object.fromEntries(Object.entries(p.provider_opts || {}).filter(([k, v]) => v != null && k !== "rotation")) };
+  const mode = o.mode || "sticky";
+  p.provider = { name: "evomi", product: o.product, mode, country: o.country || "", session: mode === "rotating" ? "" : sessionOf(p), exit_ip: p.provider_exit || "",
+    summary: ["Core Residential", o.country, o.city, mode === "sticky" ? `Sticky ${Math.round((o.lifetime || 1440) / 60)}h` : mode].filter(Boolean).join(" · ") };
+  return p;
+}
 
 let seq = 10;
 const proxyRow = (px) => ({ ...px, used_by: profiles.filter((p) => p.proxy_id === px.id).length, checking: Boolean(px.checking) });
@@ -46,6 +64,8 @@ const profiles = [
   mk({ name: "Custom proxy test", proxy_mode: "custom", proxy_parts: { type: "socks5", host: "203.0.113.10", port: 1080, username: "me", has_password: true },
     proxy_label: "socks5://me:***@203.0.113.10:1080", last_error: "[PROXY] Upstream proxy rejected the credentials (HTTP 407)" }),
   mk({ name: "Orphaned proxy", proxy_mode: "saved", proxy_id: "px_gone", proxy_label: "Missing saved proxy", proxy_missing: true }),
+  withProvider(withProxy(mk({ name: "Evomi US 01", os: "windows", tags: ["evomi"], provider_opts: { country: "US", city: "new.york" }, provider_exit: "198.51.100.61" }), proxies[2])),
+  withProvider(withProxy(mk({ name: "Evomi DE 01", provider_opts: { country: "DE" } }), proxies[2])),
 ];
 
 let settings = {
@@ -113,7 +133,9 @@ export function installMockApi() {
       const p = find(id);
       const locked = Object.keys(d).filter((k) => !["name", "notes", "folder", "tags"].includes(k));
       if (p.status !== "stopped" && locked.length) throw new Error(`Stop the running browser to change network, fingerprint or system settings (${locked.join(", ")}).`);
-      return { ...applyPayload(p, d) };
+      applyPayload(p, d);
+      if (d.provider_opts) p.provider_opts = { rotation: p.provider_opts?.rotation, ...Object.fromEntries(Object.entries(d.provider_opts).filter(([, v]) => v != null)) };
+      return { ...withProvider(p) };
     }),
     profiles_regenerate_fingerprint: guard((id, screen) => {
       const p = find(id);
@@ -153,6 +175,7 @@ export function installMockApi() {
       if (!d.host || !d.port) throw new Error("Proxy needs a host and a port between 1 and 65535");
       const px = { id: `px_${++seq}`, name: d.name || `${d.host}:${d.port}`, type: d.type, host: d.host, port: Number(d.port), username: d.username || "",
         password: "", has_password: Boolean(d.password), change_ip_url: d.change_ip_url || "", notes: d.notes || "", tags: [], last_check: {} };
+      if (/evomi(-proxy)?\.com$/i.test(d.host)) Object.assign(px, { provider: { name: "evomi", product: "rpc", ...d.provider }, provider_summary: "Core Residential · Sticky" });
       proxies.push(px);
       return proxyRow(px);
     }),
@@ -200,14 +223,36 @@ export function installMockApi() {
     proxy_parse: guard((line, scheme) => {
       const m = line.match(/^(?:(\w+):\/\/)?(?:([^:@]+):([^@]+)@)?([^:@]+):(\d+)(?::([^:]+):(.+))?$/);
       if (!m) throw new Error("Unrecognised format; use host:port, host:port:user:pass or user:pass@host:port");
-      return { type: m[1] || scheme, host: m[4], port: Number(m[5]), username: m[2] || m[6] || "", password: m[3] || m[7] || "", has_password: false };
+      const out = { type: m[1] || scheme, host: m[4], port: Number(m[5]), username: m[2] || m[6] || "", password: m[3] || m[7] || "", has_password: false };
+      if (/evomi(-proxy)?\.com$/i.test(out.host)) {
+        const life = out.password.match(/_lifetime-(\d+)/);
+        out.password = out.password.replace(/(_(country|region|city|session|hardsession|lockedsession|lifetime)-[A-Za-z0-9.\-]+)+$/, "");
+        out.provider = { name: "evomi", product: "rpc", mode: "sticky", lifetime: life ? Number(life[1]) : 1440, extra: {} };
+      }
+      return out;
     }),
     proxy_test: guard(async (payload) => {
       await sleep(700);
+      const epx = payload.proxy_id && proxies.find((x) => x.id === payload.proxy_id && x.provider);
+      if (epx) {
+        const c = payload.provider_opts?.country || epx.provider.country || "US";
+        const ip = `198.51.100.${(payload.profile_id || "x").length * 7 % 250}`;
+        return { ok: true, ip, country_code: c, city: c === "DE" ? "Berlin" : "New York", timezone: c === "DE" ? "Europe/Berlin" : "America/New_York", latency_ms: 420, locale: c === "DE" ? "de-DE" : "en-US",
+          session: payload.profile_id ? sessionOf(find(payload.profile_id)) : "" };
+      }
       if ((payload.proxy_parts?.host || "").includes("bad")) return { ok: false, error: "Upstream proxy unreachable: ConnectionRefusedError" };
       const px = payload.proxy_id && proxies.find((x) => x.id === payload.proxy_id);
       return px ? { ...px.last_check, ok: true, locale: px.last_check.country_code === "DE" ? "de-DE" : "en-US" } : { ok: true, ip: "203.0.113.10", country: "Indonesia", country_code: "ID", city: "Jakarta", timezone: "Asia/Jakarta", latency_ms: 184, locale: "id-ID" };
     }),
+    profiles_new_ip: guard((ids) => {
+      let changed = 0;
+      ids.forEach((id) => { const p = find(id); if (p.status === "stopped" && p.provider) { p.provider_opts = { ...p.provider_opts, rotation: (p.provider_opts?.rotation || 0) + 1 }; p.provider_exit = ""; withProvider(p); changed++; } });
+      return { changed, skipped_running: 0, skipped_no_provider: ids.length - changed };
+    }),
+    providers_status: guard(() => ({ evomi: { has_key: evomiKey, saved_at: evomiKey ? now() : "" } })),
+    providers_set_key: guard(async (name, key) => { await sleep(500); if (key.length < 6) throw new Error("Evomi rejected the API key"); evomiKey = true; return { has_key: true, countries: 190 }; }),
+    providers_clear_key: guard(() => { evomiKey = false; return { evomi: { has_key: false, saved_at: "" } }; }),
+    providers_targets: guard(() => ({ ...EVOMI_TARGETS, source: evomiKey ? "evomi" : "builtin" })),
     cookies_summary: guard((id) => find(id).proxy_mode === "none" ? { total: 0, sites: [] }
       : { total: 137, sites: [["google.com", 41], ["amazon.com", 28], ["facebook.com", 19], ["youtube.com", 15], ["doubleclick.net", 12], ["shopify.com", 9], ["cloudflare.com", 7], ["github.com", 6]].map(([site, count]) => ({ site, count })) }),
     cookies_export_text: guard(() => "[]"),

@@ -238,6 +238,16 @@ button:disabled { cursor: default; }
 .field-error { font-size: 11.5px; color: var(--err); }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .grid-4 { display: grid; grid-template-columns: 120px 1fr 96px; gap: 12px; }
+.grid-3 { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 12px; }
+/* Evomi provider controls (components/Evomi.js) */
+.provider-box { border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; background: var(--panel-2); }
+.provider-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.provider-head strong { font-weight: 620; }
+.evomi-fields .segmented { flex-wrap: wrap; }
+.lifetime { display: inline-flex; align-items: center; gap: 6px; }
+.lifetime .input { width: 72px; }
+.pill-provider { background: var(--accent-soft); color: var(--accent); }
+.session-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .inline { display: flex; align-items: center; gap: 8px; }
 .inline > .input { flex: 1; }
 .divider { height: 1px; background: var(--line); margin: 4px 0; }

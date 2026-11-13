@@ -95,6 +95,7 @@ function Row({ p, selected, pending }) {
             catch (err) { toast(err.message, "error"); }
           } },
         "-",
+        p.provider ? { icon: "refresh", label: "New IP (new Evomi session)", disabled: live, onClick: () => newIp([p.id]) } : null,
         { icon: "copy", label: "Clone settings (new fingerprint)", onClick: () => cloneProfile(p, false) },
         { icon: "copy", label: "Duplicate (same device & cookies)", disabled: live, onClick: () => cloneProfile(p, true) },
         { icon: "download", label: "Export…", disabled: live, onClick: () => exportProfiles([p.id], false) },
@@ -104,6 +105,17 @@ function Row({ p, selected, pending }) {
       ]} />
     </td>
   </tr>`;
+}
+
+async function newIp(ids) {
+  try {
+    const res = await call("profiles_new_ip", ids);
+    const skipped = [res.skipped_running ? `${res.skipped_running} running` : "", res.skipped_no_provider ? `${res.skipped_no_provider} without Evomi` : ""].filter(Boolean);
+    toast(`New IP for ${res.changed} profile${res.changed === 1 ? "" : "s"}${skipped.length ? ` (skipped ${skipped.join(", ")})` : ""}`, res.changed ? "success" : "info", 6000);
+  } catch (err) {
+    toast(err.message, "error");
+  }
+  refreshProfiles();
 }
 
 function AssignProxy({ ids }) {
@@ -121,8 +133,9 @@ function AssignProxy({ ids }) {
     trigger=${(toggle) => html`<${Button} size="sm" icon="proxy" disabled=${!ids.length} onClick=${toggle}>Proxy<//>`}
     items=${[
       { icon: "shield", label: "Direct (no proxy)", onClick: () => assign("", "Direct connection") },
+      { icon: "refresh", label: "New IP for Evomi profiles", onClick: () => newIp(ids) },
       proxies.length ? "-" : null,
-      ...proxies.map((px) => ({ icon: "proxy", label: `${px.name}${px.last_check?.country_code ? " · " + px.last_check.country_code : ""}`, onClick: () => assign(px.id, px.name) })),
+      ...proxies.map((px) => ({ icon: "proxy", label: `${px.name}${px.provider_summary ? " · own IP per profile" : px.last_check?.country_code ? " · " + px.last_check.country_code : ""}`, onClick: () => assign(px.id, px.name) })),
     ]} />`;
 }
 
