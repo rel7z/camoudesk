@@ -1,11 +1,12 @@
 // Proxies page: saved proxy table, add/edit drawer, bulk import, check all, rotate IP.
-import { html, useEffect, useMemo, useState } from "../vendor/preact-htm.module.js";
+import { html, useEffect, useMemo, useRef, useState } from "../vendor/preact-htm.module.js";
 import { call } from "../lib/api.js";
 import { refreshProfiles, refreshProxies } from "../lib/actions.js";
 import { confirmDialog, getState, toast, useStore } from "../lib/store.js";
 import { relativeTime } from "../lib/util.js";
 import { Icon } from "./icons.js";
 import { EvomiFields, evomiProduct, isEvomiHost } from "./Evomi.js";
+import { ProxyLineInput, ProxySummary, proxyLineText } from "./ProxyLine.js";
 import { Button, CountryChip, Empty, Field, IconButton, Menu, Select, TextArea, TextInput } from "./ui.js";
 
 const TYPE_OPTIONS = [
@@ -36,25 +37,26 @@ function ProxyEditor({ proxy, onClose }) {
     username: proxy?.username || "", password: "", change_ip_url: proxy?.change_ip_url || "", notes: proxy?.notes || "",
     provider: proxy?.provider && Object.keys(proxy.provider).length ? proxy.provider : { mode: "sticky", lifetime: 1440 },
   });
-  const evomi = isEvomiHost(f.host);
-  const [paste, setPaste] = useState("");
+  const [multi, setMulti] = useState(null); // import preview when several lines are pasted
+  const [multiText, setMultiText] = useState("");
   const [saving, setSaving] = useState(false);
+  const formRef = useRef();
+  const evomi = isEvomiHost(f.host);
   const set = (patch) => setF((prev) => ({ ...prev, ...patch }));
   useEsc(onClose);
 
-  const fill = async () => {
-    try {
-      const parts = await call("proxy_parse", paste.trim(), f.type);
-      set({ type: parts.type, host: parts.host, port: String(parts.port), username: parts.username, password: parts.password,
-        ...(parts.provider ? { provider: parts.provider } : {}) });
-      setPaste("");
-    } catch (err) {
-      toast(err.message, "error");
-    }
-  };
+  const onParts = (parts) => set({
+    type: parts.type, host: parts.host, port: String(parts.port), username: parts.username, password: parts.password,
+    ...(parts.provider ? { provider: parts.provider } : {}),
+  });
   const save = async (e, thenCheck) => {
     e && e.preventDefault();
     if (saving) return;
+    if (multi) return importAll();
+    if (!f.host.trim() || !String(f.port).trim()) {
+      toast("Paste a proxy first (host:port:user:pass or similar)", "error");
+      return;
+    }
     setSaving(true);
     try {
       const { provider, ...rest } = f;
@@ -70,48 +72,82 @@ function ProxyEditor({ proxy, onClose }) {
     }
     setSaving(false);
   };
+  const importAll = async () => {
+    setSaving(true);
+    try {
+      const res = await call("proxies_import", multiText, "http", f.name.trim(), true);
+      toast(`Imported ${res.created} prox${res.created === 1 ? "y" : "ies"}${res.errors.length ? `, ${res.errors.length} line(s) skipped` : ""}. Checking them now…`, "success", 6000);
+      await refreshProxies();
+      onClose();
+    } catch (err) {
+      toast(err.message, "error", 7000);
+    }
+    setSaving(false);
+  };
+  const autoName = evomi ? "Evomi" : f.host ? `${f.host}:${f.port}` : "e.g. US Residential 1";
   return html`<div class="overlay" onMouseDown=${(e) => e.target === e.currentTarget && onClose()}>
-    <form class="drawer drawer-sm" onSubmit=${(e) => save(e, false)}>
+    <form class="drawer drawer-sm" ref=${formRef} onSubmit=${(e) => save(e, false)}>
       <header class="drawer-head">
-        <div><h2>${isNew ? "Add proxy" : proxy.name}</h2><span class="muted small">${isNew ? "Saved proxies can be assigned to any profile" : `Used by ${proxy.used_by} profile${proxy.used_by === 1 ? "" : "s"}`}</span></div>
+        <div><h2>${isNew ? "Add proxy" : proxy.name}</h2><span class="muted small">${isNew ? "Paste one proxy, or several lines to add them all" : `Used by ${proxy.used_by} profile${proxy.used_by === 1 ? "" : "s"}`}</span></div>
         <${IconButton} icon="x" title="Close (Esc)" onClick=${onClose} />
       </header>
       <div class="drawer-body"><div class="form">
-        <${Field} label="Paste proxy" wide hint="host:port, host:port:user:pass, user:pass@host:port or scheme://user:pass@host:port">
-          <div class="inline">
-            <${TextInput} mono value=${paste} onInput=${setPaste} placeholder="203.0.113.10:8000:user:password" autofocus=${isNew} />
-            <${Button} disabled=${!paste.trim()} onClick=${fill}>Fill<//>
-          </div>
+        <div class="field field-wide">
+          <span class="field-label">Proxy</span>
+          <${ProxyLineInput} autofocus initialText=${proxyLineText(proxy)} onParts=${onParts}
+            onMulti=${isNew ? (preview, text) => { setMulti(preview); setMultiText(preview ? text : ""); } : null}
+            onSubmit=${() => formRef.current && formRef.current.requestSubmit()}
+            hint=${proxy?.has_password ? "Password saved. Paste a new line to replace the proxy, or edit fields below." : null} />
+          ${multi
+            ? html`<div class="parsed-list">${multi.proxies.slice(0, 4).map((x) => html`<div class="mono small">${x.display}</div>`)}
+                ${multi.proxies.length > 4 ? html`<div class="muted small">and ${multi.proxies.length - 4} more</div>` : null}</div>`
+            : html`<${ProxySummary} type=${f.type} host=${f.host} port=${f.port} username=${f.username} hasPassword=${Boolean(f.password) || proxy?.has_password} />`}
+        </div>
+        <${Field} label=${multi ? "Name prefix" : "Name"} wide hint="Optional">
+          <${TextInput} value=${f.name} onInput=${(name) => set({ name })} placeholder=${multi ? "e.g. US-" : autoName} />
         <//>
-        <${Field} label="Name" wide><${TextInput} value=${f.name} onInput=${(name) => set({ name })} placeholder="e.g. US Residential 1 (defaults to host:port)" /><//>
-        <div class="grid-4">
-          <${Field} label="Type"><${Select} value=${f.type} onChange=${(type) => set({ type })} options=${TYPE_OPTIONS} /><//>
-          <${Field} label="Host"><${TextInput} mono value=${f.host} onInput=${(host) => set({ host })} /><//>
-          <${Field} label="Port"><${TextInput} mono value=${f.port} onInput=${(port) => set({ port })} /><//>
-        </div>
-        <div class="grid-2">
-          <${Field} label="Username"><${TextInput} value=${f.username} disabled=${f.type === "socks4"} onInput=${(username) => set({ username })} /><//>
-          <${Field} label="Password" hint=${proxy?.has_password && !f.password ? "Saved — leave blank to keep it" : ""}>
-            <${TextInput} type="password" value=${f.password} disabled=${f.type === "socks4"} onInput=${(password) => set({ password })} placeholder=${proxy?.has_password ? "••••••••" : ""} />
-          <//>
-        </div>
-        ${evomi
+        ${!multi && evomi
           ? html`<div class="provider-box">
               <div class="provider-head"><strong>Evomi ${evomiProduct(f.host) === "rpc" ? "Core Residential" : "Residential"}</strong>
                 <span class="muted small">Every profile gets its own session, so its own IP</span></div>
               <${EvomiFields} value=${f.provider} product=${evomiProduct(f.host)} onChange=${(provider) => set({ provider })} />
             </div>`
-          : html`<${Field} label="Change-IP URL" wide hint="Optional. For rotating proxies: the provider link that switches the exit IP.">
-              <${TextInput} mono value=${f.change_ip_url} onInput=${(change_ip_url) => set({ change_ip_url })} placeholder="https://provider.example/rotate?key=…" />
-            <//>`}
-        <${Field} label="Notes" wide><${TextArea} rows=${2} value=${f.notes} onInput=${(notes) => set({ notes })} /><//>
+          : null}
+        ${multi ? null : html`
+          <details class="disclosure">
+            <summary>Edit fields manually</summary>
+            <div class="form">
+              <div class="grid-4">
+                <${Field} label="Type"><${Select} value=${f.type} onChange=${(type) => set({ type })} options=${TYPE_OPTIONS} /><//>
+                <${Field} label="Host"><${TextInput} mono value=${f.host} onInput=${(host) => set({ host })} /><//>
+                <${Field} label="Port"><${TextInput} mono value=${f.port} onInput=${(port) => set({ port })} /><//>
+              </div>
+              <div class="grid-2">
+                <${Field} label="Username"><${TextInput} value=${f.username} disabled=${f.type === "socks4"} onInput=${(username) => set({ username })} /><//>
+                <${Field} label="Password" hint=${proxy?.has_password && !f.password ? "Saved — leave blank to keep it" : ""}>
+                  <${TextInput} type="password" value=${f.password} disabled=${f.type === "socks4"} onInput=${(password) => set({ password })} placeholder=${proxy?.has_password ? "••••••••" : ""} />
+                <//>
+              </div>
+            </div>
+          </details>
+          <details class="disclosure" open=${Boolean(proxy?.change_ip_url || proxy?.notes)}>
+            <summary>More options</summary>
+            <div class="form">
+              ${evomi ? null : html`<${Field} label="Change-IP URL" wide hint="For rotating proxies: the provider link that switches the exit IP.">
+                <${TextInput} mono value=${f.change_ip_url} onInput=${(change_ip_url) => set({ change_ip_url })} placeholder="https://provider.example/rotate?key=…" />
+              <//>`}
+              <${Field} label="Notes" wide><${TextArea} rows=${2} value=${f.notes} onInput=${(notes) => set({ notes })} /><//>
+            </div>
+          </details>`}
       </div></div>
       <footer class="drawer-foot">
         <span />
         <div class="inline">
           <${Button} onClick=${onClose}>Cancel<//>
-          <${Button} icon="bolt" busy=${saving} onClick=${(e) => save(e, true)}>Save & check<//>
-          <${Button} kind="primary" type="submit" busy=${saving}>Save<//>
+          ${multi
+            ? html`<${Button} kind="primary" icon="upload" type="submit" busy=${saving} disabled=${!multi.proxies.length}>Import ${multi.proxies.length} prox${multi.proxies.length === 1 ? "y" : "ies"}<//>`
+            : html`<${Button} icon="bolt" busy=${saving} onClick=${(e) => save(e, true)}>Save & check<//>
+                <${Button} kind="primary" type="submit" busy=${saving}>Save<//>`}
         </div>
       </footer>
     </form>

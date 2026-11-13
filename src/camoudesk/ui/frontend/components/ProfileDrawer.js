@@ -6,6 +6,7 @@ import { confirmDialog, getState, setState, toast, useStore } from "../lib/store
 import { LOCALES, OS_LABELS, copyText, gpuLabel, timezones } from "../lib/util.js";
 import { Icon } from "./icons.js";
 import { EvomiFields } from "./Evomi.js";
+import { ProxyLineInput, ProxySummary, proxyLineText } from "./ProxyLine.js";
 import { Button, CountryChip, Field, IconButton, Segmented, Select, Tabs, TextArea, TextInput, Toggle } from "./ui.js";
 
 const PROVIDER_KEYS = ["country", "region", "city", "mode", "lifetime"];
@@ -103,18 +104,10 @@ function CheckResult({ result }) {
 
 function NetworkTab({ f, set, row, disabled, check, setCheck }) {
   const proxies = useStore((s) => s.proxies);
-  const [paste, setPaste] = useState("");
   const tzList = useMemo(() => timezones(), []);
-  const applyPaste = async () => {
-    if (!paste.trim()) return;
-    try {
-      const parts = await call("proxy_parse", paste.trim(), f.p_type);
-      set({ p_type: parts.type, p_host: parts.host, p_port: String(parts.port), p_user: parts.username, p_pass: parts.password, p_has_pass: false });
-      setPaste("");
-      setCheck(null);
-    } catch (err) {
-      toast(err.message, "error");
-    }
+  const onParts = (parts) => {
+    set({ p_type: parts.type, p_host: parts.host, p_port: String(parts.port), p_user: parts.username, p_pass: parts.password, p_has_pass: false });
+    setCheck(null);
   };
   const test = async () => {
     setCheck({ pending: true });
@@ -156,12 +149,15 @@ function NetworkTab({ f, set, row, disabled, check, setCheck }) {
       : null}
     ${f.proxy_mode === "custom"
       ? html`
-        <${Field} label="Paste proxy" wide hint="host:port, host:port:user:pass, user:pass@host:port or socks5://user:pass@host:port">
-          <div class="inline">
-            <${TextInput} mono value=${paste} disabled=${disabled} onInput=${setPaste} placeholder="203.0.113.10:8000:user:password" />
-            <${Button} disabled=${disabled || !paste.trim()} onClick=${applyPaste}>Fill<//>
-          </div>
-        <//>
+        <div class="field field-wide">
+          <span class="field-label">Proxy</span>
+          <${ProxyLineInput} disabled=${disabled} initialText=${row?.proxy_mode === "custom" ? proxyLineText(row.proxy_parts) : ""} onParts=${onParts}
+            hint=${row?.proxy_parts?.has_password ? "Password saved. Paste a new line to replace the proxy, or edit fields below." : null} />
+          <${ProxySummary} type=${f.p_type} host=${f.p_host} port=${f.p_port} username=${f.p_user} hasPassword=${Boolean(f.p_pass) || f.p_has_pass} />
+        </div>
+        <details class="disclosure">
+          <summary>Edit fields manually</summary>
+          <div class="form">
         <div class="grid-4">
           <${Field} label="Type"><${Select} value=${f.p_type} disabled=${disabled} onChange=${(p_type) => set({ p_type })} options=${[
             { value: "http", label: "HTTP" }, { value: "https", label: "HTTPS" }, { value: "socks5", label: "SOCKS5" }, { value: "socks4", label: "SOCKS4" }]} /><//>
@@ -177,6 +173,8 @@ function NetworkTab({ f, set, row, disabled, check, setCheck }) {
             : ""}>
             <${TextInput} type="password" value=${f.p_pass} disabled=${disabled || f.p_type === "socks4"} onInput=${(p_pass) => set({ p_pass })}
               placeholder=${f.p_has_pass ? "••••••••" : ""} /><//>
+        </div>
+        </details>
         </div>`
       : null}
     ${f.proxy_mode !== "none"
