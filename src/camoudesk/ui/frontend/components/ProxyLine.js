@@ -14,14 +14,14 @@ export function proxyLineText(p) {
   return `${p.type || "http"}://${p.username ? `${p.username}@` : ""}${host}:${p.port}`;
 }
 
-// Chips summarising what was read: type, address, user, password, provider.
-export function ProxySummary({ type, host, port, username, hasPassword }) {
+// Chips summarising what was read: type, address, user, password (length only), provider.
+export function ProxySummary({ type, host, port, username, hasPassword, passwordLength }) {
   if (!host) return null;
   return html`<div class="parsed">
     <span class="pill">${String(type || "http").toUpperCase()}</span>
     <span class="mono parsed-addr">${host}${port ? `:${port}` : ""}</span>
     ${username ? html`<span class="parsed-item"><span class="muted">user</span> <span class="mono">${username.length > 18 ? `${username.slice(0, 16)}…` : username}</span></span>` : null}
-    ${hasPassword ? html`<span class="parsed-item text-ok"><${Icon} name="check" size=${12} /> password</span>` : null}
+    ${hasPassword ? html`<span class="parsed-item text-ok"><${Icon} name="check" size=${12} /> password${passwordLength ? html`<span class="muted"> · ${passwordLength} chars</span>` : " saved"}</span>` : null}
     ${isEvomiHost(host) ? html`<span class="pill pill-provider">Evomi</span>` : null}
   </div>`;
 }
@@ -33,48 +33,82 @@ const meaningful = (text) => text.split(/\r?\n/).map((l) => l.trim()).filter((l)
  * onParts(parts): a single proxy was read (bridge proxy_parse result).
  * onMulti(preview | null, text): several lines were pasted (only when the caller handles imports).
  * onSubmit(): Enter pressed (Shift+Enter adds a line when multi-line is allowed).
+ * controlRef: gets { flush() }, which reads the text as it is right now (skipping the typing delay)
+ *   and resolves to {parts} | {preview, text} | {error} | {untouched} | {empty}. Save must call it, or
+ *   it could store what was read before the last keystrokes.
  */
-export function ProxyLineInput({ initialText = "", scheme = "http", onParts, onMulti, onSubmit, autofocus, disabled, hint }) {
+export function ProxyLineInput({ initialText = "", scheme = "http", onParts, onMulti, onSubmit, controlRef, autofocus, disabled, hint }) {
   const [text, setText] = useState(initialText);
   const [touched, setTouched] = useState(false);
   const [status, setStatus] = useState({ kind: "idle" });
   const ref = useRef();
+  const seq = useRef(0); // only the newest read may update the form
+  const timer = useRef(null);
+  const latest = useRef({ text: initialText, touched: false });
+  latest.current = { text, touched };
 
   useEffect(() => {
     if (autofocus && ref.current) setTimeout(() => ref.current && ref.current.focus(), 30);
   }, []);
 
-  useEffect(() => {
-    if (!touched) return;
-    const lines = meaningful(text);
+  const read = async (value) => {
+    const id = ++seq.current;
+    const stale = () => id !== seq.current;
+    const lines = meaningful(value);
     if (!lines.length) {
       setStatus({ kind: "idle" });
       onMulti && onMulti(null);
-      return;
+      return { empty: true };
     }
-    const timer = setTimeout(async () => {
-      if (lines.length > 1) {
-        if (!onMulti) return setStatus({ kind: "error", error: "Paste one proxy here" });
-        try {
-          const preview = await call("proxies_import_preview", text, scheme);
-          setStatus({ kind: "multi", preview });
-          onMulti(preview, text);
-        } catch (err) {
-          setStatus({ kind: "error", error: err.message });
-        }
-        return;
+    if (lines.length > 1) {
+      if (!onMulti) {
+        setStatus({ kind: "error", error: "Paste one proxy here" });
+        return { error: "Paste one proxy here" };
       }
-      onMulti && onMulti(null);
       try {
-        const parts = await call("proxy_parse", lines[0], scheme);
-        setStatus({ kind: "ok" });
-        onParts(parts);
+        const preview = await call("proxies_import_preview", value, scheme);
+        if (stale()) return { stale: true };
+        setStatus({ kind: "multi", preview });
+        onMulti(preview, value);
+        return { preview, text: value };
       } catch (err) {
+        if (stale()) return { stale: true };
         setStatus({ kind: "error", error: err.message });
+        return { error: err.message };
       }
-    }, 200);
-    return () => clearTimeout(timer);
+    }
+    try {
+      const parts = await call("proxy_parse", lines[0], scheme);
+      if (stale()) return { stale: true };
+      onMulti && onMulti(null);
+      setStatus({ kind: "ok" });
+      onParts(parts);
+      return { parts };
+    } catch (err) {
+      if (stale()) return { stale: true };
+      setStatus({ kind: "error", error: err.message });
+      return { error: err.message };
+    }
+  };
+
+  useEffect(() => {
+    if (!touched) return;
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => read(text), 200);
+    return () => clearTimeout(timer.current);
   }, [text, touched]);
+
+  useEffect(() => {
+    if (!controlRef) return;
+    controlRef.current = {
+      flush: () => {
+        clearTimeout(timer.current);
+        const { text: value, touched: changed } = latest.current;
+        return changed ? read(value) : Promise.resolve({ untouched: true });
+      },
+    };
+    return () => { controlRef.current = null; };
+  });
 
   const rows = Math.min(Math.max(text.split("\n").length, 1), 6);
   const onKeyDown = (e) => {
@@ -93,7 +127,7 @@ export function ProxyLineInput({ initialText = "", scheme = "http", onParts, onM
   return html`<div class="proxy-line">
     <textarea ref=${ref} class="input mono proxy-line-input" rows=${rows} value=${text} disabled=${disabled}
       spellcheck="false" autocomplete="off" placeholder="host:port:user:pass"
-      onKeyDown=${onKeyDown} onInput=${(e) => { setText(e.currentTarget.value); setTouched(true); }} />
+      onKeyDown=${onKeyDown} onInput=${(e) => { setText(e.currentTarget.value); setTouched(true); latest.current = { text: e.currentTarget.value, touched: true }; }} />
     ${message}
   </div>`;
 }

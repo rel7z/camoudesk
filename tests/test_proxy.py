@@ -57,6 +57,31 @@ class TestProxySupport(unittest.TestCase):
         self.assertFalse(res["ok"])
         self.assertIn("refused", res["error"])
 
+    def test_failures_get_actionable_messages_without_credentials(self) -> None:
+        import requests
+
+        cases = [
+            (requests.exceptions.ProxyError("HTTPSConnectionPool(host='ipinfo.io', port=443): Max retries exceeded "
+                                            "(Caused by ProxyError('Unable to connect to proxy', OSError('Tunnel connection "
+                                            "failed: 407 Proxy Authentication Required')))"), "username or password (HTTP 407)"),
+            (requests.exceptions.ConnectTimeout("Connection to 203.0.113.9 timed out"), "did not answer in time"),
+            (ConnectionError("[Errno 61] Connection refused"), "refused the connection"),
+            (requests.exceptions.ConnectionError("Failed to resolve 'nope.invalid' (nodename nor servname provided)"), "could not be found"),
+        ]
+        for exc, expected in cases:
+            with self.subTest(expected=expected):
+                res = check_proxy_health("http://acct:s3cret@proxy.example:8000", http_get=MagicMock(side_effect=exc))
+                self.assertFalse(res["ok"])
+                self.assertIn(expected, res["error"])
+                self.assertNotIn("s3cret", str(res))
+
+    def test_success_does_not_echo_the_credentialed_url(self) -> None:
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"ip": "203.0.113.10", "country": "US", "timezone": "UTC"}
+        res = check_proxy_health("http://acct:s3cret@proxy.example:8000", http_get=MagicMock(return_value=resp))
+        self.assertTrue(res["ok"])
+        self.assertNotIn("s3cret", str(res))
+
 
 if __name__ == "__main__":
     unittest.main()

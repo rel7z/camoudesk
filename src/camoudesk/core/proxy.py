@@ -22,6 +22,34 @@ HTTPS_PROBE_URL = "https://ipinfo.io/json"
 PROBES = (HTTPS_PROBE_URL, DEFAULT_PROXY_PROBE_URL)
 
 
+def _scrub(text: str) -> str:
+    """Remove any user:password@ from technical error text."""
+    import re
+
+    return re.sub(r"://[^/@\s]+@", "://***@", text)
+
+
+def friendly_error(exc: BaseException) -> str:
+    """A short, actionable message for a failure to get through the proxy (no credentials)."""
+    text = str(exc)
+    low = text.lower()
+    if "407" in text or "proxy authentication required" in low:
+        return ("The proxy rejected the username or password (HTTP 407). "
+                "Re-paste the proxy exactly as your provider gave it.")
+    if "socks" in low and ("auth" in low or "credentials" in low or "0x01" in low):
+        return "The SOCKS proxy rejected the username or password. Re-paste the proxy exactly as your provider gave it."
+    if isinstance(exc, requests.Timeout) or "timed out" in low or "timeout" in low:
+        return "The proxy did not answer in time. It may be offline or blocking this connection."
+    if "refused" in low or "errno 61" in low:
+        return "The proxy refused the connection. Check the host and port."
+    if "name or service not known" in low or "nodename nor servname" in low or "failed to resolve" in low or "getaddrinfo" in low:
+        return "The proxy host could not be found. Check the host name."
+    if "tunnel connection failed" in low:
+        code = next((c for c in ("400", "403", "404", "429", "500", "502", "503") if c in text), "")
+        return f"The proxy refused to open the connection{f' (HTTP {code})' if code else ''}."
+    return f"Could not connect through the proxy ({type(exc).__name__})."
+
+
 class _ProbeError(Exception):
     """The probe service failed (rate limit, bad answer); another service may still work."""
 
@@ -73,7 +101,7 @@ def check_proxy_health(
             resp = requester(url, proxies=proxies, timeout=timeout, headers={"User-Agent": "CamouDesk-ProxyCheck/1.0"})
         except Exception as exc:
             # Could not get through the proxy at all: another probe service will not help.
-            return {"ok": False, "error": str(exc)}
+            return {"ok": False, "error": friendly_error(exc), "detail": _scrub(str(exc))[:300]}
         latency_ms = int((time.monotonic() - start) * 1000)
         status = getattr(resp, "status_code", 200)
         try:
@@ -86,5 +114,5 @@ def check_proxy_health(
         except ValueError:
             last_error = "Exit IP lookup returned invalid JSON"
             continue
-        return {"ok": True, **info, "latency_ms": latency_ms, "normalized_url": proxy_cfg.raw_url}
+        return {"ok": True, **info, "latency_ms": latency_ms}
     return {"ok": False, "error": last_error}

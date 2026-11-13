@@ -102,7 +102,7 @@ function CheckResult({ result }) {
   </div>`;
 }
 
-function NetworkTab({ f, set, row, disabled, check, setCheck }) {
+function NetworkTab({ f, set, row, disabled, check, setCheck, lineCtl }) {
   const proxies = useStore((s) => s.proxies);
   const tzList = useMemo(() => timezones(), []);
   const onParts = (parts) => {
@@ -151,9 +151,9 @@ function NetworkTab({ f, set, row, disabled, check, setCheck }) {
       ? html`
         <div class="field field-wide">
           <span class="field-label">Proxy</span>
-          <${ProxyLineInput} disabled=${disabled} initialText=${row?.proxy_mode === "custom" ? proxyLineText(row.proxy_parts) : ""} onParts=${onParts}
+          <${ProxyLineInput} disabled=${disabled} controlRef=${lineCtl} initialText=${row?.proxy_mode === "custom" ? proxyLineText(row.proxy_parts) : ""} onParts=${onParts}
             hint=${row?.proxy_parts?.has_password ? "Password saved. Paste a new line to replace the proxy, or edit fields below." : null} />
-          <${ProxySummary} type=${f.p_type} host=${f.p_host} port=${f.p_port} username=${f.p_user} hasPassword=${Boolean(f.p_pass) || f.p_has_pass} />
+          <${ProxySummary} type=${f.p_type} host=${f.p_host} port=${f.p_port} username=${f.p_user} hasPassword=${Boolean(f.p_pass) || f.p_has_pass} passwordLength=${f.p_pass.length} />
         </div>
         <details class="disclosure">
           <summary>Edit fields manually</summary>
@@ -452,6 +452,7 @@ export function ProfileDrawer() {
   const [initial, setInitial] = useState(null);
   const [check, setCheck] = useState(null);
   const [saving, setSaving] = useState(false);
+  const lineCtl = useRef(null); // the Custom proxy field (flushed before saving)
 
   useEffect(() => {
     if (!drawer) return;
@@ -492,7 +493,17 @@ export function ProfileDrawer() {
     }
     setSaving(true);
     try {
-      const full = toPayload(f, check);
+      let current = f;
+      if (!running && f.proxy_mode === "custom" && lineCtl.current) {
+        // Use the proxy line as typed, even if the typing delay has not read it yet.
+        const read = await lineCtl.current.flush();
+        if (read.error) throw new Error(read.error);
+        if (read.parts) {
+          const pp = read.parts;
+          current = { ...f, p_type: pp.type, p_host: pp.host, p_port: String(pp.port), p_user: pp.username, p_pass: pp.password, p_has_pass: false };
+        }
+      }
+      const full = toPayload(current, check);
       // A running browser keeps its network, fingerprint and system settings; only labels change.
       const payload = running ? { name: full.name, notes: full.notes, folder: full.folder, tags: full.tags } : full;
       const saved = await saveProfile(drawer.id, payload);
@@ -520,7 +531,7 @@ export function ProfileDrawer() {
       <${Tabs} value=${tab} onChange=${(t) => setState({ drawer: { ...drawer, tab: t } })} tabs=${TABS} />
       <div class="drawer-body">
         ${tab === "general" ? html`<${GeneralTab} f=${f} set=${set} disabled=${false} locked=${running} isNew=${isNew} />` : null}
-        ${tab === "network" ? html`<${NetworkTab} f=${f} set=${set} row=${row} disabled=${running} check=${check} setCheck=${setCheck} />` : null}
+        ${tab === "network" ? html`<${NetworkTab} f=${f} set=${set} row=${row} disabled=${running} check=${check} setCheck=${setCheck} lineCtl=${lineCtl} />` : null}
         ${tab === "fingerprint" ? html`<${FingerprintTab} f=${f} set=${set} row=${row} disabled=${running} />` : null}
         ${tab === "cookies" ? html`<${CookiesTab} row=${row} disabled=${running} />` : null}
         ${tab === "advanced" ? html`<${AdvancedTab} f=${f} set=${set} row=${row} disabled=${running} />` : null}

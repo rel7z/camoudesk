@@ -45,22 +45,26 @@ function ProxyEditor({ proxy, onClose }) {
   const set = (patch) => setF((prev) => ({ ...prev, ...patch }));
   useEsc(onClose);
 
-  const onParts = (parts) => set({
+  const lineCtl = useRef(null);
+  const partsPatch = (parts) => ({
     type: parts.type, host: parts.host, port: String(parts.port), username: parts.username, password: parts.password,
     ...(parts.provider ? { provider: parts.provider } : {}),
   });
+  const onParts = (parts) => set(partsPatch(parts));
   const save = async (e, thenCheck) => {
     e && e.preventDefault();
     if (saving) return;
-    if (multi) return importAll();
-    if (!f.host.trim() || !String(f.port).trim()) {
-      toast("Paste a proxy first (host:port:user:pass or similar)", "error");
-      return;
-    }
     setSaving(true);
     try {
-      const { provider, ...rest } = f;
-      const data = { ...rest, port: Number(f.port) || f.port, ...(evomi ? { provider } : {}) };
+      // Read the field as it is now: the typing delay may not have caught the last keystrokes.
+      const read = (lineCtl.current && (await lineCtl.current.flush())) || {};
+      if (read.error) throw new Error(read.error);
+      if (read.preview) return await importAll(read.text);
+      const fields = read.parts ? { ...f, ...partsPatch(read.parts) } : f;
+      if (!fields.host.trim() || !String(fields.port).trim()) throw new Error("Paste a proxy first (host:port:user:pass or similar)");
+      const isEvomi = isEvomiHost(fields.host);
+      const { provider, ...rest } = fields;
+      const data = { ...rest, port: Number(fields.port) || fields.port, ...(isEvomi ? { provider } : {}) };
       const row = isNew ? await call("proxies_create", data) : await call("proxies_update", proxy.id, data);
       toast(isNew ? `Saved "${row.name}"` : "Proxy updated", "success");
       await refreshProxies();
@@ -69,20 +73,15 @@ function ProxyEditor({ proxy, onClose }) {
       if (thenCheck) checkProxy(row.id);
     } catch (err) {
       toast(err.message, "error", 7000);
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
-  const importAll = async () => {
-    setSaving(true);
-    try {
-      const res = await call("proxies_import", multiText, "http", f.name.trim(), true);
-      toast(`Imported ${res.created} prox${res.created === 1 ? "y" : "ies"}${res.errors.length ? `, ${res.errors.length} line(s) skipped` : ""}. Checking them now…`, "success", 6000);
-      await refreshProxies();
-      onClose();
-    } catch (err) {
-      toast(err.message, "error", 7000);
-    }
-    setSaving(false);
+  const importAll = async (text) => {
+    const res = await call("proxies_import", text || multiText, "http", f.name.trim(), true);
+    toast(`Imported ${res.created} prox${res.created === 1 ? "y" : "ies"}${res.errors.length ? `, ${res.errors.length} line(s) skipped` : ""}. Checking them now…`, "success", 6000);
+    await refreshProxies();
+    onClose();
   };
   const autoName = evomi ? "Evomi" : f.host ? `${f.host}:${f.port}` : "e.g. US Residential 1";
   return html`<div class="overlay" onMouseDown=${(e) => e.target === e.currentTarget && onClose()}>
@@ -94,14 +93,14 @@ function ProxyEditor({ proxy, onClose }) {
       <div class="drawer-body"><div class="form">
         <div class="field field-wide">
           <span class="field-label">Proxy</span>
-          <${ProxyLineInput} autofocus initialText=${proxyLineText(proxy)} onParts=${onParts}
+          <${ProxyLineInput} autofocus controlRef=${lineCtl} initialText=${proxyLineText(proxy)} onParts=${onParts}
             onMulti=${isNew ? (preview, text) => { setMulti(preview); setMultiText(preview ? text : ""); } : null}
             onSubmit=${() => formRef.current && formRef.current.requestSubmit()}
             hint=${proxy?.has_password ? "Password saved. Paste a new line to replace the proxy, or edit fields below." : null} />
           ${multi
             ? html`<div class="parsed-list">${multi.proxies.slice(0, 4).map((x) => html`<div class="mono small">${x.display}</div>`)}
                 ${multi.proxies.length > 4 ? html`<div class="muted small">and ${multi.proxies.length - 4} more</div>` : null}</div>`
-            : html`<${ProxySummary} type=${f.type} host=${f.host} port=${f.port} username=${f.username} hasPassword=${Boolean(f.password) || proxy?.has_password} />`}
+            : html`<${ProxySummary} type=${f.type} host=${f.host} port=${f.port} username=${f.username} hasPassword=${Boolean(f.password) || proxy?.has_password} passwordLength=${f.password.length} />`}
         </div>
         <${Field} label=${multi ? "Name prefix" : "Name"} wide hint="Optional">
           <${TextInput} value=${f.name} onInput=${(name) => set({ name })} placeholder=${multi ? "e.g. US-" : autoName} />
