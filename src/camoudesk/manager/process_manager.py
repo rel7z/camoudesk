@@ -27,7 +27,7 @@ import threading
 import time
 from typing import IO, Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from camoudesk.core.launcher import Network, build_launch_spec, ensure_location, minimal_env, resolve_network
+from camoudesk.core.launcher import Network, build_launch_spec, ensure_location, minimal_env, override_urls, resolve_network
 from camoudesk.core.proxy_forwarder import ProxyForwarder
 from camoudesk.core.proxy_store import ProxyStore
 from camoudesk.core.storage import ProfileStore, RegistryCorruptError
@@ -360,7 +360,7 @@ class ProcessManager:
         profile: Profile,
         mode: str,
         headless: bool,
-        url_override: Optional[str],
+        url_override: Any,
         local_proxy: Optional[ProxyConfig] = None,
         network: Optional[Network] = None,
     ) -> Tuple[List[str], Dict[str, str], str]:
@@ -370,8 +370,8 @@ class ProcessManager:
             cmd = [self.python_executable, "-B", "-m", "camoudesk.core.browser_worker", "--profile-id", profile.id]
             if headless:
                 cmd.append("--headless")
-            if url_override:
-                cmd.extend(["--url", url_override])
+            for url in override_urls(url_override):
+                cmd.extend(["--url", url])
             return cmd, _build_worker_env(), ""
         spec = build_launch_spec(
             profile, self.store, headless=headless, url_override=url_override, local_proxy=local_proxy,
@@ -393,7 +393,7 @@ class ProcessManager:
         self,
         profile_id: str,
         headless: bool = False,
-        url_override: Optional[str] = None,
+        url_override: Any = None,
         mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         safe_id = sanitize_profile_id(profile_id)
@@ -486,6 +486,29 @@ class ProcessManager:
             tmp_path.unlink(missing_ok=True)
             self._end_busy(safe_id)
 
+    def check_identity(self, profile_id: str, timeout: float = 180.0) -> Dict[str, Any]:
+        """Run the anonymity probe in a short headless run of the profile; returns its raw result."""
+        safe_id = sanitize_profile_id(profile_id)
+        if self.store.get_profile(safe_id) is None:
+            raise KeyError("Profile not found")
+        if self.is_running(safe_id):
+            raise RuntimeError("Stop the browser first: the check opens the profile itself.")
+        self._begin_busy(safe_id)
+        try:
+            cmd = [self.python_executable, "-B", "-m", "camoudesk.core.browser_worker", "--profile-id", safe_id, "--check-identity"]
+            try:
+                proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
+                                      env=_build_worker_env())
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("The anonymity check timed out") from exc
+            for line in proc.stdout.splitlines():
+                if line.startswith("[RESULT] "):
+                    return json.loads(line[len("[RESULT] "):])
+            errors = [ln for ln in (proc.stderr + proc.stdout).splitlines() if ln.startswith("[ERROR]")]
+            raise RuntimeError(errors[-1][len("[ERROR] "):] if errors else f"The anonymity check failed (exit {proc.returncode})")
+        finally:
+            self._end_busy(safe_id)
+
     def _cookie_import_command(self, safe_id: str, cookie_file: Path) -> List[str]:
         return [self.python_executable, "-B", "-m", "camoudesk.core.browser_worker", "--profile-id", safe_id,
                 "--import-cookies", str(cookie_file)]
@@ -547,7 +570,7 @@ class ProcessManager:
         self,
         safe_id: str,
         headless: bool,
-        url_override: Optional[str],
+        url_override: Any,
         mode: Optional[str],
     ) -> Dict[str, Any]:
         profile = self.store.get_profile(safe_id)

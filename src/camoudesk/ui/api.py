@@ -198,6 +198,7 @@ class DesktopBridgeApi:
                 "proxy_missing": net.missing_saved_proxy,
                 "provider": provider,
                 "canvas_real": self._canvas_real(profile),
+                "identity": self._identity_summary(profile),
                 "proxy_country": net.country_code,
                 "effective_timezone": net.timezone,
                 "effective_locale": net.locale,
@@ -209,6 +210,14 @@ class DesktopBridgeApi:
             }
         )
         return data
+
+    def _identity_summary(self, profile: Profile) -> Optional[Dict[str, Any]]:
+        from camoudesk.core import identity_check
+
+        report = identity_check.load_report(self.store.profile_dir(profile.id))
+        if not report:
+            return None
+        return {k: report.get(k) for k in ("status", "passed", "total", "checked_at")}
 
     def _canvas_real(self, profile: Profile) -> bool:
         """Whether this profile shows its real canvas (it claims this Mac's OS and GPU)."""
@@ -441,6 +450,73 @@ class DesktopBridgeApi:
     @_bridge
     def profiles_launch(self, profile_id: str) -> Dict[str, Any]:
         return self.manager.launch(profile_id)
+
+    # ------------------------------------------------------------------ anonymity check
+
+    TEST_SITES = (
+        "https://pixelscan.net",
+        "https://browserleaks.com/ip",
+        "https://browserleaks.com/webrtc",
+        "https://browserleaks.com/canvas",
+        "https://abrahamjuliot.github.io/creepjs/",
+    )
+
+    def _real_ip(self) -> str:
+        """This Mac's own public IP (asked directly, never through a proxy), cached 5 minutes:
+        the check must know it to tell whether a browser leaks it."""
+        cached = getattr(self, "_real_ip_cache", None)
+        if cached and time.time() - cached[1] < 300:
+            return cached[0]
+        import requests
+
+        try:
+            ip = str(requests.get("https://ipinfo.io/json", timeout=8, headers={"User-Agent": "CamouDesk"}).json().get("ip") or "")
+        except Exception:
+            ip = ""
+        self._real_ip_cache = (ip, time.time())
+        return ip
+
+    def _identity_expected(self, profile: Profile) -> Dict[str, Any]:
+        from camoudesk.core.fingerprint import load_saved_fingerprint, summarize
+        from camoudesk.core.launcher import canvas_policy
+
+        saved = load_saved_fingerprint(self.store.profile_dir(profile.id)) or {}
+        summary = summarize(profile.os, saved) if saved else FingerprintSummary(os=profile.os)
+        net = resolve_network(profile, self.proxies)
+        webgl = profile.fp_overrides.get("webgl")
+        return {
+            "os": profile.os, "user_agent": summary.user_agent, "screen": summary.screen, "cores": summary.cores,
+            "gpu": webgl[1] if webgl else summary.gpu, "canvas_real": canvas_policy(self.store.app_dir, profile, saved) is not True,
+            "proxy": net.proxy.is_configured, "real_ip": self._real_ip(), "country": net.country_code,
+            "timezone": net.timezone, "locale": net.locale, "block_webgl": bool(profile.fp_overrides.get("block_webgl")),
+        }
+
+    @_bridge
+    def profiles_check_identity(self, profile_id: str) -> Dict[str, Any]:
+        """Open the profile headless through its own network and grade what it exposes."""
+        from camoudesk.core import identity_check
+
+        raw = self.manager.check_identity(profile_id)
+        profile = self.store.get_profile(profile_id)
+        if profile is None:
+            raise KeyError("Profile not found")
+        expected = identity_check.expected_from_claim(self._identity_expected(profile), raw.get("claimed") or {})
+        report = identity_check.evaluate(raw, expected)
+        identity_check.save_report(self.store.profile_dir(profile.id), report)
+        return report
+
+    @_bridge
+    def profiles_identity_report(self, profile_id: str) -> Optional[Dict[str, Any]]:
+        from camoudesk.core import identity_check
+
+        if self.store.get_profile(profile_id) is None:
+            raise KeyError("Profile not found")
+        return identity_check.load_report(self.store.profile_dir(profile_id))
+
+    @_bridge
+    def profiles_open_test_sites(self, profile_id: str) -> Dict[str, Any]:
+        """Start the profile with pixelscan, BrowserLeaks and CreepJS open in tabs."""
+        return self.manager.launch(profile_id, url_override=list(self.TEST_SITES))
 
     @_bridge
     def profiles_stop(self, profile_id: str) -> Dict[str, Any]:

@@ -66,6 +66,8 @@ function Row({ p, selected, pending }) {
         <span class="name">${p.name}</span>
         ${p.folder ? html`<span class="pill pill-folder"><${Icon} name="folder" size=${12} />${p.folder}</span>` : null}
         ${(p.tags || []).slice(0, 3).map((t) => html`<span class="pill pill-tag" style=${tagStyle(t)}>${t}</span>`)}
+        ${p.identity ? html`<span class=${`pill pill-check is-${p.identity.status}`} title=${`Anonymity check ${p.identity.checked_at}: ${p.identity.passed}/${p.identity.total} passed`}
+            onClick=${(e) => { e.stopPropagation(); openDrawer(p.id, "check"); }}>${p.identity.status === "pass" ? "✓" : p.identity.status === "warn" ? "⚠" : "✕"} ${p.identity.passed}/${p.identity.total}</span>` : null}
       </div>
       <div class="sub">${p.notes || (p.start_urls || [])[0] || ""}</div>
     </td>
@@ -90,6 +92,7 @@ function Row({ p, selected, pending }) {
       <${Menu} items=${[
         { icon: "edit", label: "Edit profile", onClick: () => openDrawer(p.id, "general") },
         { icon: "terminal", label: "Logs & diagnostics", onClick: () => openDrawer(p.id, "advanced") },
+        { icon: "shield", label: "Check anonymity", disabled: live, onClick: () => openDrawer(p.id, "check") },
         { icon: "copy", label: "Copy diagnostics", onClick: async () => {
             try { await copyText(await call("profiles_diagnostics", p.id)); toast("Diagnostics copied", "success"); }
             catch (err) { toast(err.message, "error"); }

@@ -16,6 +16,7 @@ const TABS = [
   { value: "network", label: "Network", icon: "proxy" },
   { value: "fingerprint", label: "Fingerprint", icon: "fingerprint" },
   { value: "cookies", label: "Cookies", icon: "cookie" },
+  { value: "check", label: "Check", icon: "shield", existingOnly: true },
   { value: "advanced", label: "Advanced", icon: "terminal" },
 ];
 
@@ -379,6 +380,69 @@ function FingerprintTab({ f, set, row, disabled, preview, onAnother, fpSource, s
   </div>`;
 }
 
+const CHECK_STATUS = {
+  pass: { label: "Looks anonymous", cls: "chip-ok", icon: "check" },
+  warn: { label: "Warnings", cls: "chip-warn", icon: "alert" },
+  fail: { label: "Problems found", cls: "chip-err", icon: "x" },
+};
+
+// Anonymity check: opens the profile headless through its own network and grades what websites
+// can read (core/identity_check.py), plus a shortcut to the public test sites.
+function CheckTab({ row, running }) {
+  const [report, setReport] = useState(undefined);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    call("profiles_identity_report", row.id).then((r) => live && setReport(r)).catch(() => live && setReport(null));
+    return () => { live = false; };
+  }, [row.id]);
+  const run = async () => {
+    setBusy(true);
+    try {
+      const r = await call("profiles_check_identity", row.id);
+      setReport(r);
+      refreshProfiles();
+    } catch (err) {
+      toast(err.message, "error", 7000);
+    }
+    setBusy(false);
+  };
+  const openSites = async () => {
+    try {
+      await call("profiles_open_test_sites", row.id);
+      toast("Opened pixelscan, BrowserLeaks and CreepJS in this profile", "success");
+      refreshProfiles();
+    } catch (err) {
+      toast(err.message, "error", 7000);
+    }
+  };
+  const st = report && CHECK_STATUS[report.status];
+  return html`<div class="form">
+    <div class="check-actions">
+      <${Button} kind="primary" icon="shield" busy=${busy} disabled=${running} onClick=${run}>${report ? "Check again" : "Check anonymity"}<//>
+      <${Button} icon="external" disabled=${running || busy} onClick=${openSites}>Open test sites<//>
+    </div>
+    <p class="muted small">${running
+      ? "Stop the browser to run the check: it opens this profile itself, headless, through its own proxy."
+      : busy
+      ? "Opening the profile headless through its proxy and reading what websites can see… (10–30 s)"
+      : "Opens this profile headless through its own proxy and reads what a fingerprinting script would: IP, WebRTC, timezone, language, user agent, screen, canvas, WebGL, audio and fonts, also inside a worker and an iframe."}</p>
+    ${report === undefined
+      ? html`<div class="skeleton device-skeleton" />`
+      : report
+      ? html`<div class="check-summary">
+            <span class=${`chip ${st.cls}`}><${Icon} name=${st.icon} size=${13} />${st.label}</span>
+            <span class="muted small">${report.passed}/${report.total} checks passed · ${report.checked_at}</span>
+          </div>
+          <div class="check-list">${report.items.map((it) => html`<div class=${`check-item is-${it.status}`}>
+            <${Icon} name=${it.status === "pass" ? "check" : it.status === "warn" ? "alert" : "x"} size=${15} />
+            <div><div class="check-label">${it.label}</div><div class="check-detail">${it.detail}</div>
+              ${it.hint ? html`<div class="check-hint">${it.hint}</div>` : null}</div>
+          </div>`)}</div>`
+      : html`<p class="note"><${Icon} name="info" /> Not checked yet.</p>`}
+  </div>`;
+}
+
 function CookiesTab({ row, disabled }) {
   const [summary, setSummary] = useState(null);
   const [paste, setPaste] = useState("");
@@ -621,13 +685,14 @@ export function ProfileDrawer() {
         ? html`<div class="banner"><${Icon} name="info" /><span>Running: you can rename it and edit notes, folder and tags. Stop it to change network, fingerprint or system settings.</span>
             <${Button} size="sm" kind="stop" icon="stop" onClick=${() => stopProfile(row.id)}>Stop<//></div>`
         : null}
-      <${Tabs} value=${tab} onChange=${(t) => setState({ drawer: { ...drawer, tab: t } })} tabs=${TABS} />
+      <${Tabs} value=${tab} onChange=${(t) => setState({ drawer: { ...drawer, tab: t } })} tabs=${TABS.filter((t) => !t.existingOnly || !isNew)} />
       <div class="drawer-body">
         ${tab === "general" ? html`<${GeneralTab} f=${f} set=${set} disabled=${false} locked=${running} isNew=${isNew} />` : null}
         ${tab === "network" ? html`<${NetworkTab} f=${f} set=${set} row=${row} disabled=${running} check=${check} setCheck=${setCheck} lineCtl=${lineCtl} />` : null}
         ${tab === "fingerprint" ? html`<${FingerprintTab} f=${f} set=${set} row=${row} disabled=${running}
           preview=${preview} onAnother=${() => loadPreview(f.os, f.fp_screen)} fpSource=${fpSource} setFpSource=${setFpSource} />` : null}
         ${tab === "cookies" ? html`<${CookiesTab} row=${row} disabled=${running} />` : null}
+        ${tab === "check" && row ? html`<${CheckTab} row=${row} running=${running} />` : null}
         ${tab === "advanced" ? html`<${AdvancedTab} f=${f} set=${set} row=${row} disabled=${running} />` : null}
       </div>
       <footer class="drawer-foot">

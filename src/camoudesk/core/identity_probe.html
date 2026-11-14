@@ -1,0 +1,143 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>CamouDesk identity check</title></head>
+<body>
+<pre id="result"></pre>
+<script>
+// Runs as the page's own script (the main world websites see), loaded by browser_worker
+// --check-identity. It collects what a fingerprinting script would read, reads it again in a Web
+// Worker and an iframe (spoofing that only patches the page shows up as a mismatch), checks that
+// the getters look native, and writes JSON into #result. core/identity_check.py grades it.
+(async () => {
+  const out = { errors: [] };
+  const safe = async (key, fn) => { try { out[key] = await fn(); } catch (e) { out.errors.push(`${key}: ${e && e.message || e}`); } };
+  // cyrb53: crypto.subtle is unavailable on about:blank (not a secure context).
+  const hash = async (str) => {
+    let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+    for (let i = 0; i < str.length; i++) { const ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+  };
+
+  await safe("navigator", () => ({
+    userAgent: navigator.userAgent, platform: navigator.platform, oscpu: navigator.oscpu || "",
+    language: navigator.language, languages: Array.from(navigator.languages || []),
+    hardwareConcurrency: navigator.hardwareConcurrency, maxTouchPoints: navigator.maxTouchPoints,
+    webdriver: navigator.webdriver, pdfViewerEnabled: navigator.pdfViewerEnabled,
+    plugins: navigator.plugins ? navigator.plugins.length : null,
+  }));
+  await safe("screen", () => ({
+    width: screen.width, height: screen.height, availWidth: screen.availWidth, availHeight: screen.availHeight,
+    colorDepth: screen.colorDepth, devicePixelRatio: window.devicePixelRatio,
+    innerWidth: window.innerWidth, outerWidth: window.outerWidth,
+  }));
+  await safe("intl", () => ({
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    locale: Intl.DateTimeFormat().resolvedOptions().locale,
+    offsetMinutes: new Date().getTimezoneOffset(),
+  }));
+  await safe("webgl", () => {
+    const gl = document.createElement("canvas").getContext("webgl");
+    if (!gl) return { available: false };
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    return { available: true, vendor: ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
+             renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER) };
+  });
+  await safe("canvas", async () => {
+    const draw = () => {
+      const c = document.createElement("canvas"); c.width = 280; c.height = 60;
+      const x = c.getContext("2d"); x.textBaseline = "top"; x.font = "16px Arial";
+      x.fillStyle = "#f60"; x.fillRect(12, 6, 110, 30); x.fillStyle = "#069"; x.fillText("CamouDesk identity ✓", 4, 22);
+      x.strokeStyle = "rgba(102,204,0,0.7)"; x.beginPath(); x.arc(220, 30, 20, 0, Math.PI * 2); x.stroke();
+      return c.toDataURL();
+    };
+    const a = draw(), b = draw();
+    return { hashA: await hash(a), hashB: await hash(b), stable: a === b, length: a.length };
+  });
+  await safe("audio", async () => {
+    const run = async () => {
+      const ctx = new OfflineAudioContext(1, 4410, 44100);
+      const osc = ctx.createOscillator(); osc.type = "triangle"; osc.frequency.value = 1000;
+      const comp = ctx.createDynamicsCompressor(); osc.connect(comp); comp.connect(ctx.destination); osc.start(0);
+      const buf = await ctx.startRendering(); const data = buf.getChannelData(0);
+      let sum = 0; for (let i = 1000; i < 2000; i++) sum += Math.abs(data[i]);
+      return sum.toFixed(6);
+    };
+    const a = await run(), b = await run();
+    return { sumA: a, sumB: b, stable: a === b };
+  });
+  await safe("fonts", () => {
+    const c = document.createElement("canvas").getContext("2d");
+    const width = (font) => { c.font = `20px ${font}`; return c.measureText("mmmmmmmmmlli1WQ").width; };
+    const base = width("monospace");
+    const probe = ["Arial", "Helvetica Neue", "Segoe UI", "Calibri", "Tahoma", "Menlo", "Ubuntu", "DejaVu Sans", "Liberation Sans", "Apple Color Emoji"];
+    return Object.fromEntries(probe.map((f) => [f, width(`'${f}', monospace`) !== base]));
+  });
+  await safe("native", () => {
+    const isNative = (fn) => typeof fn === "function" && /\{\s*\[native code\]\s*\}\s*$/.test(Function.prototype.toString.call(fn));
+    const getter = (proto, key) => { const d = Object.getOwnPropertyDescriptor(proto, key); return d && d.get; };
+    const checks = {
+      "Navigator.userAgent": getter(Navigator.prototype, "userAgent"),
+      "Navigator.platform": getter(Navigator.prototype, "platform"),
+      "Navigator.hardwareConcurrency": getter(Navigator.prototype, "hardwareConcurrency"),
+      "Navigator.webdriver": getter(Navigator.prototype, "webdriver"),
+      "Screen.width": getter(Screen.prototype, "width"),
+      "HTMLCanvasElement.toDataURL": HTMLCanvasElement.prototype.toDataURL,
+      "WebGLRenderingContext.getParameter": WebGLRenderingContext.prototype.getParameter,
+      "Function.toString": Function.prototype.toString,
+    };
+    const notNative = Object.entries(checks).filter(([, fn]) => !isNative(fn)).map(([k]) => k);
+    return { notNative, ownNavigatorProps: Object.getOwnPropertyNames(navigator) };
+  });
+  await safe("worker", () => new Promise((resolve) => {
+    const src = `postMessage({ userAgent: navigator.userAgent, platform: navigator.platform,
+      hardwareConcurrency: navigator.hardwareConcurrency, languages: Array.from(navigator.languages || []),
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });`;
+    const w = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+    const timer = setTimeout(() => resolve({ error: "no answer" }), 4000);
+    w.onmessage = (e) => { clearTimeout(timer); resolve(e.data); w.terminate(); };
+    w.onerror = (e) => { clearTimeout(timer); resolve({ error: String(e.message || "worker error") }); };
+  }));
+  await safe("iframe", () => new Promise((resolve) => {
+    const f = document.createElement("iframe"); f.style.display = "none";
+    f.onload = () => {
+      try {
+        const w = f.contentWindow;
+        resolve({ userAgent: w.navigator.userAgent, platform: w.navigator.platform, screenWidth: w.screen.width,
+                  hardwareConcurrency: w.navigator.hardwareConcurrency });
+      } catch (e) { resolve({ error: String(e.message || e) }); }
+    };
+    f.srcdoc = "<!doctype html><title>i</title>"; document.body.appendChild(f);
+    setTimeout(() => resolve({ error: "no answer" }), 4000);
+  }));
+  await safe("ip", async () => {
+    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 12000);
+    try {
+      const r = await fetch("https://ipinfo.io/json", { signal: ctl.signal, cache: "no-store" });
+      const j = await r.json();
+      return { ip: j.ip || "", country: j.country || "", city: j.city || "", timezone: j.timezone || "" };
+    } finally { clearTimeout(t); }
+  });
+  await safe("webrtc", () => new Promise((resolve) => {
+    if (typeof RTCPeerConnection === "undefined") return resolve({ available: false, candidates: [] });
+    const found = new Set();
+    let pc;
+    try { pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }); }
+    catch (e) { return resolve({ available: false, candidates: [], error: String(e.message || e) }); }
+    const done = () => { try { pc.close(); } catch (_) {} resolve({ available: true, candidates: Array.from(found) }); };
+    pc.onicecandidate = (e) => {
+      if (!e.candidate) return done();
+      const m = /candidate:\S+ \d+ \S+ \d+ (\S+) \d+ typ (\S+)/.exec(e.candidate.candidate);
+      if (m) found.add(`${m[2]} ${m[1]}`);
+    };
+    pc.createDataChannel("x");
+    pc.createOffer().then((o) => pc.setLocalDescription(o)).catch(() => done());
+    setTimeout(done, 5000);
+  }));
+
+  document.getElementById("result").textContent = JSON.stringify(out);
+})();
+</script>
+</body>
+</html>

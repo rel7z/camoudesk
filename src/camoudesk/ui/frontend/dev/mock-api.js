@@ -261,6 +261,33 @@ export function installMockApi() {
       ids.forEach((id) => { const p = find(id); if (p.status === "stopped" && p.provider) { p.provider_opts = { ...p.provider_opts, rotation: (p.provider_opts?.rotation || 0) + 1 }; p.provider_exit = ""; withProvider(p); changed++; } });
       return { changed, skipped_running: 0, skipped_no_provider: ids.length - changed };
     }),
+    profiles_check_identity: guard(async (id) => {
+      await sleep(1800);
+      const p = find(id);
+      const report = { status: p.proxy_mode === "none" ? "warn" : "warn", passed: 12, total: 14, checked_at: now(), exit_ip: "58.177.7.62", errors: [], items: [
+        { id: "ip", label: "IP address", status: p.proxy_mode === "none" ? "warn" : "pass", detail: p.proxy_mode === "none" ? "No proxy: websites see this Mac's own IP (92.119.177.22)." : "58.177.7.62 (Hong Kong, HK) through the proxy.", hint: "" },
+        { id: "webrtc", label: "WebRTC", status: "pass", detail: "Blocked: WebRTC reveals no address.", hint: "" },
+        { id: "timezone", label: "Timezone", status: "pass", detail: "Asia/Hong_Kong matches the IP location.", hint: "" },
+        { id: "language", label: "Language", status: "pass", detail: "zh-HK.", hint: "" },
+        { id: "user_agent", label: "User agent", status: "pass", detail: p.fingerprint_summary.user_agent, hint: "" },
+        { id: "screen", label: "Screen", status: "pass", detail: `${p.fingerprint_summary.screen} at 1x.`, hint: "" },
+        { id: "cores", label: "CPU cores", status: "pass", detail: "8 cores.", hint: "" },
+        { id: "webdriver", label: "Automation flag", status: "pass", detail: "navigator.webdriver is false.", hint: "" },
+        { id: "consistency", label: "Worker & iframe", status: "pass", detail: "Worker and iframe see the same values as the page.", hint: "" },
+        { id: "native", label: "Native getters", status: "pass", detail: "Spoofed values come from the engine; getters look native.", hint: "" },
+        { id: "canvas", label: "Canvas", status: p.os === "macos" ? "pass" : "warn", detail: p.os === "macos" ? "Real canvas, identical on every read (like stock Firefox)." : "Covered: readings are blocked or random on each read, which some sites notice.", hint: p.os === "macos" ? "" : "Only a profile matching this Mac (macOS and its GPU) can show a real canvas: use Randomize → Match this Mac." },
+        { id: "webgl", label: "WebGL", status: "pass", detail: p.fingerprint_summary.gpu, hint: "" },
+        { id: "audio", label: "Audio", status: "pass", detail: "Audio fingerprint is stable.", hint: "" },
+        { id: "fonts", label: "Fonts", status: "fail", detail: "Fonts from another system are visible: Helvetica Neue.", hint: "" },
+      ] };
+      report.status = report.items.some((i) => i.status === "fail") ? "fail" : report.items.some((i) => i.status === "warn") ? "warn" : "pass";
+      report.passed = report.items.filter((i) => i.status === "pass").length;
+      p.identity = { status: report.status, passed: report.passed, total: report.total, checked_at: report.checked_at };
+      p.identity_report = report;
+      return report;
+    }),
+    profiles_identity_report: guard((id) => find(id).identity_report || null),
+    profiles_open_test_sites: guard(async (id) => (await window.pywebview.api.profiles_launch(id)).data),
     providers_status: guard(() => ({ evomi: { has_key: evomiKey, saved_at: evomiKey ? now() : "" } })),
     providers_set_key: guard(async (name, key) => { await sleep(500); if (key.length < 6) throw new Error("Evomi rejected the API key"); evomiKey = true; return { has_key: true, countries: 190 }; }),
     providers_clear_key: guard(() => { evomiKey = false; return { evomi: { has_key: false, saved_at: "" } }; }),

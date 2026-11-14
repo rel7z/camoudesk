@@ -272,6 +272,12 @@ def ensure_location(profile: Profile, network: Network, store: Any, proxies: Any
     return network
 
 
+def override_urls(value: Any) -> List[str]:
+    """Start pages that replace the profile's own: one URL or a list (each opens in a tab)."""
+    items = value if isinstance(value, (list, tuple)) else [value] if value else []
+    return [str(u).strip() for u in items if str(u or "").strip()]
+
+
 def has_proxy_credentials(profile: Profile, proxies: Any = None) -> bool:
     """Whether a direct launch needs the loopback ProxyForwarder (Firefox cannot authenticate itself)."""
     return resolve_network(profile, proxies).proxy.has_credentials
@@ -314,7 +320,7 @@ def build_launch_spec(
     profile: Profile,
     store: Any,
     headless: bool = False,
-    url_override: Optional[str] = None,
+    url_override: Any = None,
     local_proxy: Optional[ProxyConfig] = None,
     network: Optional[Network] = None,
 ) -> LaunchSpec:
@@ -349,7 +355,7 @@ def build_launch_spec(
     args += ["-profile", str(ff_dir), "-no-remote"]
     args.append("-headless" if headless else "-foreground")
     # Each extra command-line URL opens in its own tab.
-    args += [url_override.strip()] if url_override and url_override.strip() else list(profile.start_urls)
+    args += override_urls(url_override) or list(profile.start_urls)
 
     env = _browser_env(opts.get("env") or {})
     return LaunchSpec(executable=str(opts["executable_path"]), args=args, env=env, geoip=geoip)

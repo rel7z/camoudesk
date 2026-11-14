@@ -168,6 +168,7 @@ button:disabled { cursor: default; }
 .chip-busy .dot { animation: pulse 1s ease-in-out infinite; }
 .chip-idle { background: var(--panel-2); color: var(--faint); }
 .chip-err { background: var(--err-soft); color: var(--err); }
+.chip-warn { background: var(--warn-soft); color: var(--warn); }
 @keyframes pulse { 50% { opacity: 0.3; } }
 .pill { display: inline-flex; align-items: center; gap: 4px; height: 19px; padding: 0 7px; border-radius: 5px; font-size: 11px;
   background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
@@ -356,3 +357,23 @@ button:disabled { cursor: default; }
 .device-head { display: flex; align-items: center; justify-content: space-between; }
 .device-head strong { font-weight: 620; }
 .device-skeleton { height: 150px; border-radius: var(--radius); }
+
+/* Anonymity check (ProfileDrawer CheckTab) */
+.check-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.check-summary { display: flex; align-items: center; gap: 10px; }
+.check-summary .chip { display: inline-flex; align-items: center; gap: 5px; }
+.check-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.check-item { display: grid; grid-template-columns: 18px 1fr; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--line); }
+.check-item:first-child { border-top: 0; }
+.check-item > .icon { margin-top: 2px; }
+.check-item.is-pass > .icon { color: var(--ok); }
+.check-item.is-warn > .icon { color: var(--warn); }
+.check-item.is-fail > .icon { color: var(--err); }
+.check-item.is-fail { background: var(--err-soft); }
+.check-label { font-weight: 600; font-size: 12.5px; }
+.check-detail { color: var(--muted); font-size: 12.5px; word-break: break-word; }
+.check-hint { color: var(--faint); font-size: 12px; margin-top: 2px; }
+.pill-check { font-size: 10.5px; }
+.pill-check.is-pass { background: var(--ok-soft); color: var(--ok); }
+.pill-check.is-warn { background: var(--warn-soft); color: var(--warn); }
+.pill-check.is-fail { background: var(--err-soft); color: var(--err); }
