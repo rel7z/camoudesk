@@ -196,7 +196,10 @@ def summary(opts: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------- public API (targeting lists)
 
 
-class EvomiApiError(RuntimeError):
+from camoudesk.core.providers import ProviderAdapter, ProviderApiError, register
+
+
+class EvomiApiError(ProviderApiError):
     pass
 
 
@@ -261,3 +264,44 @@ def normalize_targets(block: Any) -> Dict[str, Any]:
 
     return {"countries": countries, "regions": per_country(block.get("regions")),
             "cities": per_country(block.get("cities")), "fetched_at": time.strftime("%Y-%m-%d %H:%M")}
+
+
+class EvomiAdapter(ProviderAdapter):
+    """Evomi behind the provider interface (core/providers/__init__.py)."""
+
+    name = NAME
+    label = "Evomi"
+    products = PRODUCTS
+
+    def detect(self, host: str) -> Optional[str]:
+        return detect(host)
+
+    def split_password(self, password: str) -> Tuple[str, Dict[str, str]]:
+        return split_password(password)
+
+    def opts_from_params(self, params: Dict[str, str], product: str) -> Dict[str, Any]:
+        return opts_from_params(params, product)
+
+    def clean_opts(self, raw: Any, *, partial: bool = False) -> Dict[str, Any]:
+        return clean_opts(raw, partial=partial)
+
+    def effective_opts(self, proxy_opts: Dict[str, Any], profile_opts: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        return effective_opts(proxy_opts, profile_opts)
+
+    def session_id(self, profile_id: str, rotation: int, targeting: str) -> str:
+        return session_id(profile_id, rotation, targeting)
+
+    def targeting_key(self, opts: Dict[str, Any]) -> str:
+        return targeting_key(opts)
+
+    def compose_password(self, base: str, opts: Dict[str, Any], session: str = "") -> str:
+        return compose_password(base, opts, session)
+
+    def summary(self, opts: Dict[str, Any]) -> str:
+        return summary(opts)
+
+    def fetch_targets(self, api_key: str, product: str) -> Dict[str, Any]:
+        return fetch_targets(api_key, product)
+
+
+ADAPTER = register(EvomiAdapter())

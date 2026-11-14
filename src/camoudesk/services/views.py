@@ -5,7 +5,6 @@ from urllib.parse import quote, unquote
 
 from camoudesk.core.geo import locale_for_country
 from camoudesk.core.launcher import resolve_network
-from camoudesk.core.providers import evomi
 from camoudesk.models.profile import Profile, ProxyConfig
 from camoudesk.models.proxy import SavedProxy
 
@@ -92,7 +91,7 @@ def profile_row(ctx: "AppContext", profile: Profile, lookup: Any = None) -> Dict
             provider = {
                 "name": saved.provider.get("name", "evomi"),
                 "product": opts.get("product", ""),
-                "summary": evomi.summary(opts),
+                "summary": saved.adapter.summary(opts),
                 "session": "" if opts.get("mode") == "rotating" else saved.session_for(profile),
                 "mode": opts.get("mode", "sticky"),
                 "country": opts.get("country", ""),

@@ -5,7 +5,7 @@ import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlsplit
 
-from camoudesk.core.providers import evomi
+from camoudesk.core import providers
 from camoudesk.models.profile import ProxyConfig, clean_tags, normalize_country, normalize_ip, sanitize_profile_id
 
 PROXY_TYPES = ("http", "https", "socks4", "socks5")
@@ -71,26 +71,31 @@ class SavedProxy:
         host = f"[{self.host}]" if ":" in self.host else self.host
         return ProxyConfig.from_url(f"{self.type}://{auth}{host}:{self.port}")
 
+    @property
+    def adapter(self) -> "providers.ProviderAdapter":
+        """This entry's provider integration (only for provider entries)."""
+        return providers.get(self.provider.get("name") or "evomi")
+
     def to_config(self) -> ProxyConfig:
         """The proxy itself. For a provider entry: its targeting without a session (one IP per request)."""
         if self.provider:
-            return self._config(evomi.compose_password(self.password, self.provider))
+            return self._config(self.adapter.compose_password(self.password, self.provider))
         return self._config(self.password)
 
     def profile_opts(self, profile: Any) -> Dict[str, Any]:
         """Provider options for a profile: this proxy's defaults with the profile's overrides."""
-        return evomi.effective_opts(self.provider, getattr(profile, "provider_opts", None) or {})
+        return self.adapter.effective_opts(self.provider, getattr(profile, "provider_opts", None) or {})
 
     def session_for(self, profile: Any) -> str:
         """The profile's own session ID; a new country/region/city or session type is a new ID."""
         rotation = int((getattr(profile, "provider_opts", None) or {}).get("rotation") or 0)
-        return evomi.session_id(profile.id, rotation, evomi.targeting_key(self.profile_opts(profile)))
+        return self.adapter.session_id(profile.id, rotation, self.adapter.targeting_key(self.profile_opts(profile)))
 
     def config_for(self, profile: Any) -> ProxyConfig:
         """What ``profile`` routes through: its own provider session, or the plain proxy."""
         if not self.provider:
             return self.to_config()
-        return self._config(evomi.compose_password(self.password, self.profile_opts(profile), self.session_for(profile)))
+        return self._config(self.adapter.compose_password(self.password, self.profile_opts(profile), self.session_for(profile)))
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -102,7 +107,7 @@ class SavedProxy:
         data["has_password"] = bool(self.password)
         data["display"] = self.to_config().masked_display()
         if self.provider:
-            data["provider_summary"] = evomi.summary(self.provider)
+            data["provider_summary"] = self.adapter.summary(self.provider)
         return data
 
     @classmethod
@@ -140,16 +145,17 @@ class SavedProxy:
         if ptype == "socks4" and (username or password):
             raise ValueError("SOCKS4 proxies cannot use a username/password; use SOCKS5 instead.")
         provider: Dict[str, Any] = {}
-        product = evomi.detect(host)
-        if product:
+        found = providers.detect(host)
+        if found:
             # Options pasted inside the password become provider settings (the pasted session ID is
             # dropped: every profile gets its own). Explicit provider settings from the form win.
-            password, params = evomi.split_password(password)
+            adapter, product = found
+            password, params = adapter.split_password(password)
             given = raw.get("provider")
             if isinstance(given, dict) and given:
-                provider = evomi.clean_opts({**given, "product": product})
+                provider = adapter.clean_opts({**given, "product": product})
             else:
-                provider = evomi.opts_from_params(params, product)
+                provider = adapter.opts_from_params(params, product)
         change_url = str(raw.get("change_ip_url") or "").strip()
         if change_url and urlsplit(change_url).scheme not in ("http", "https"):
             raise ValueError("Change-IP URL must be http(s)")

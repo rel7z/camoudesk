@@ -37,11 +37,11 @@ def safe_ref(value: Any) -> str:
 def clean_provider_opts(value: Any) -> Dict[str, Any]:
     """Per-profile provider settings: session rotation counter, targeting/mode overrides, and the
     key of the session its cached exit location belongs to."""
-    from camoudesk.core.providers import evomi
+    from camoudesk.core import providers
 
     raw = value if isinstance(value, dict) else {}
     try:
-        out: Dict[str, Any] = evomi.clean_opts(raw, partial=True)
+        out: Dict[str, Any] = providers.get("evomi").clean_opts(raw, partial=True)
     except ValueError:
         out = {}
     try:

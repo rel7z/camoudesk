@@ -10,7 +10,8 @@ from urllib.parse import unquote
 from camoudesk.core.launcher import resolve_network, session_key
 from camoudesk.core.proxy import check_proxy_config
 from camoudesk.core.proxy_parse import parse_proxy_line, parse_proxy_list
-from camoudesk.core.providers import evomi
+from camoudesk.core import providers
+from camoudesk.core.providers import ProviderApiError
 from camoudesk.models.profile import ProxyConfig
 from camoudesk.models.proxy import SavedProxy
 from camoudesk.services.errors import Conflict, Invalid, NotFound
@@ -135,11 +136,12 @@ class ProxyService:
         cfg = parse_proxy_line(str(line or ""), default_scheme or "http")
         parts = proxy_parts(cfg)
         parts["password"] = unquote(cfg.password)
-        product = evomi.detect(cfg.host)
-        if product:
-            # Evomi: the password's options become provider settings (its session is per profile).
-            parts["password"], params = evomi.split_password(parts["password"])
-            parts["provider"] = evomi.opts_from_params(params, product)
+        found = providers.detect(cfg.host)
+        if found:
+            # A provider gateway: the password's options become provider settings (its session is per profile).
+            adapter, product = found
+            parts["password"], params = adapter.split_password(parts["password"])
+            parts["provider"] = adapter.opts_from_params(params, product)
         return parts
 
     def test(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -192,22 +194,28 @@ class ProxyService:
 
     # ---------------------------------------------------------------- provider integrations
 
+    @staticmethod
+    def _adapter(name: str) -> "providers.ProviderAdapter":
+        try:
+            return providers.get(name)
+        except ValueError as exc:
+            raise Invalid(f"Unknown provider '{name}'") from exc
+
     def providers_status(self) -> Dict[str, Any]:
         return self.ctx.providers.status()
 
     def set_provider_key(self, name: str, api_key: str) -> Dict[str, Any]:
-        """Save an API key after Evomi accepts it (it is never sent back to the page)."""
-        if name != "evomi":
-            raise Invalid(f"Unknown provider '{name}'")
+        """Save an API key after the provider accepts it (it is never sent back to the page)."""
+        adapter = self._adapter(name)
         key = str(api_key or "").strip()
         try:
-            targets = evomi.fetch_targets(key, "rpc")
-        except evomi.EvomiApiError as exc:
+            targets = adapter.fetch_targets(key, next(iter(adapter.products)))
+        except ProviderApiError as exc:
             raise Invalid(str(exc)) from exc
-        providers = self.ctx.providers
-        providers.set_api_key(name, key)
-        providers.store_targets(name, "rpc", targets)
-        return {**providers.status()[name], "countries": len(targets["countries"])}
+        store = self.ctx.providers
+        store.set_api_key(name, key)
+        store.store_targets(name, next(iter(adapter.products)), targets)
+        return {**store.status()[name], "countries": len(targets["countries"])}
 
     def clear_provider_key(self, name: str) -> Dict[str, Any]:
         self.ctx.providers.clear_api_key(name)
@@ -216,24 +224,23 @@ class ProxyService:
     def provider_targets(self, name: str = "evomi", product: str = "rpc", refresh: bool = False) -> Dict[str, Any]:
         """Countries, regions and cities for the pickers: from Evomi's API with a key (cached a
         day), otherwise every country code CamouDesk knows, with free-text regions/cities."""
-        if name != "evomi":
-            raise Invalid(f"Unknown provider '{name}'")
-        product = product if product in evomi.PRODUCTS else "rp"
-        providers = self.ctx.providers
-        key = providers.api_key(name)
+        adapter = self._adapter(name)
+        product = product if product in adapter.products else next(iter(adapter.products))
+        store = self.ctx.providers
+        key = store.api_key(name)
         fallback_warning = ""
         if key:
-            cached = None if refresh else providers.cached_targets(name, product)
+            cached = None if refresh else store.cached_targets(name, product)
             if cached is not None:
-                return {**cached, "source": "evomi"}
+                return {**cached, "source": name}
             try:
-                targets = evomi.fetch_targets(key, product)
-                providers.store_targets(name, product, targets)
-                return {**targets, "source": "evomi"}
-            except evomi.EvomiApiError as exc:
-                stale = providers.cached_targets(name, product, max_age=float("inf"))
+                targets = adapter.fetch_targets(key, product)
+                store.store_targets(name, product, targets)
+                return {**targets, "source": name}
+            except ProviderApiError as exc:
+                stale = store.cached_targets(name, product, max_age=float("inf"))
                 if stale is not None:
-                    return {**stale, "source": "evomi", "warning": str(exc)}
+                    return {**stale, "source": name, "warning": str(exc)}
                 fallback_warning = str(exc)
         from camoudesk.core.geo import _territory_languages
 
