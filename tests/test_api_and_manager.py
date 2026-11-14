@@ -17,12 +17,11 @@ import unittest
 from unittest.mock import patch
 import urllib.request
 
-from proxy_fakes import FakeHttpProxy, OriginServer
-
 from camoudesk.core.storage import ProfileStore
 from camoudesk.manager.process_manager import MODE_DIRECT, MODE_WORKER, ProcessManager
 from camoudesk.models.profile import Profile, ProxyConfig
 from camoudesk.ui.api import DesktopBridgeApi
+from proxy_fakes import FakeHttpProxy, OriginServer
 
 
 def _group_alive(pgid: int) -> bool:

@@ -68,7 +68,8 @@ class ProviderStore:
             data = self._read()
         out: Dict[str, Any] = {}
         for name in PROVIDERS:
-            entry = data.get(name) if isinstance(data.get(name), dict) else {}
+            raw = data.get(name)
+            entry: Dict[str, Any] = raw if isinstance(raw, dict) else {}
             out[name] = {"has_key": bool(entry.get("api_key")), "saved_at": str(entry.get("saved_at") or "")}
         return out
 

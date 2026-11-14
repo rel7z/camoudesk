@@ -4,14 +4,15 @@ import argparse
 import signal
 import sys
 import threading
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from camoufox.sync_api import Camoufox
+from playwright.sync_api import BrowserContext
 
 from camoudesk.core.launcher import build_camoufox_kwargs, override_urls, profile_camoufox_kwargs, resolve_network  # noqa: F401
-from camoudesk.engines import get_engine
 from camoudesk.core.proxy_store import ProxyStore
 from camoudesk.core.storage import ProfileStore
+from camoudesk.engines import get_engine
 
 __all__ = ["build_camoufox_kwargs", "run_worker", "main"]
 
@@ -56,7 +57,8 @@ def run_worker(
     )
 
     try:
-        with Camoufox(**kwargs) as context:
+        with Camoufox(**kwargs) as _context:
+            context = cast(BrowserContext, _context)  # persistent_context=True yields a BrowserContext
             context.on("close", lambda *_: closed_event.set())
             pages = list(context.pages)
             for i, target_url in enumerate(target_urls):
@@ -107,7 +109,7 @@ def run_cookie_import(profile_id: str, cookie_file: str) -> int:
         print(f"[ERROR] Profile '{profile_id}' not found.", file=sys.stderr, flush=True)
         return 2
     try:
-        with open(cookie_file, "r", encoding="utf-8") as fh:
+        with open(cookie_file, encoding="utf-8") as fh:
             cookies = json.load(fh)
     except (OSError, ValueError) as exc:
         print(f"[ERROR] Could not read cookies: {exc}", file=sys.stderr, flush=True)
@@ -117,7 +119,8 @@ def run_cookie_import(profile_id: str, cookie_file: str) -> int:
     network = resolve_network(profile, ProxyStore(store.app_dir))
     kwargs, _ = engine.context_kwargs(profile, store, network, headless=True)
     try:
-        with Camoufox(**kwargs) as context:
+        with Camoufox(**kwargs) as _context:
+            context = cast(BrowserContext, _context)
             before = len(context.cookies())
             context.add_cookies(cookies)
             after = len(context.cookies())

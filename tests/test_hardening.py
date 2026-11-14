@@ -9,7 +9,6 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
 
 from camoudesk.core.proxy_store import ProxyStore
 from camoudesk.core.settings_store import SettingsStore

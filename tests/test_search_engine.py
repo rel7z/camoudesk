@@ -70,7 +70,8 @@ class TestApplySearchEngine(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_verification_hash_follows_firefox_salt(self) -> None:
-        import base64, hashlib
+        import base64
+        import hashlib
 
         salt = "firefox_data" + "camoudesk-google" + se._DISCLAIMER.replace("$appName", "Camoufox")
         expected = base64.b64encode(hashlib.sha256(salt.encode()).digest()).decode()

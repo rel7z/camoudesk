@@ -20,6 +20,8 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from camoudesk.core.providers import ProviderAdapter, ProviderApiError, register
+
 NAME = "evomi"
 PRODUCTS = {"rpc": "Core Residential", "rp": "Premium Residential", "mp": "Mobile"}
 MODES = ("sticky", "hard", "locked", "rotating")
@@ -55,7 +57,7 @@ def split_password(password: str) -> Tuple[str, Dict[str, str]]:
     Options are only peeled off the end of the password, and only for names Evomi documents, so a
     base password that itself contains ``_`` or ``-`` is left intact.
     """
-    base, params = password, {}
+    base, params = password, {}  # type: Tuple[str, Dict[str, str]]
     while True:
         cut = None
         for m in _OPTION_RE.finditer(base):
@@ -196,7 +198,6 @@ def summary(opts: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------- public API (targeting lists)
 
 
-from camoudesk.core.providers import ProviderAdapter, ProviderApiError, register
 
 
 class EvomiApiError(ProviderApiError):

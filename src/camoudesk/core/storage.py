@@ -32,9 +32,9 @@ from camoudesk.models.profile import (
     clean_provider_opts,
     clean_start_urls,
     clean_tags,
-    parse_screen,
     normalize_country,
     normalize_ip,
+    parse_screen,
     safe_ref,
     sanitize_profile_id,
     validate_os_target,
@@ -110,7 +110,7 @@ class ProfileStore:
         if not legacy_registry.is_file():
             return []
         try:
-            with open(legacy_registry, "r", encoding="utf-8") as stream:
+            with open(legacy_registry, encoding="utf-8") as stream:
                 raw_list = json.load(stream)
         except (OSError, json.JSONDecodeError):
             return []
@@ -148,7 +148,7 @@ class ProfileStore:
         if not self.registry_path.is_file():
             return []
         try:
-            with open(self.registry_path, "r", encoding="utf-8") as stream:
+            with open(self.registry_path, encoding="utf-8") as stream:
                 raw = json.load(stream)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             backup = self._backup_corrupt_registry()
@@ -470,10 +470,11 @@ class ProfileStore:
             if target is None:
                 raise KeyError(f"Profile '{safe_id}' not found")
             if screen is not ProfileStore._KEEP:
-                if screen and not parse_screen(screen):
+                pinned = parse_screen(screen) if screen else None
+                if screen and not pinned:
                     raise ValueError("Screen must look like 1920x1080")
-                if screen:
-                    target.fp_overrides["screen"] = f"{parse_screen(screen)[0]}x{parse_screen(screen)[1]}"
+                if pinned:
+                    target.fp_overrides["screen"] = f"{pinned[0]}x{pinned[1]}"
                 else:
                     target.fp_overrides.pop("screen", None)
             pdir = self.profile_dir(safe_id)

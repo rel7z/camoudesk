@@ -1,0 +1,21 @@
+# Local checks before each commit: `pip install -e ".[dev]" && pre-commit install`.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff
+        entry: ruff check --fix
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy
+        entry: mypy
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: unit-tests
+        name: offline unit tests
+        entry: pytest tests/ -q -m "not live_browser and not ui"
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

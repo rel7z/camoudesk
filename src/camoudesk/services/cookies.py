@@ -53,7 +53,7 @@ class CookieService:
     def import_file(self, profile_id: str, path: str) -> Dict[str, Any]:
         if os.path.getsize(path) > MAX_COOKIE_FILE:
             raise Invalid("Cookie file is larger than 5 MB")
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        with open(path, encoding="utf-8", errors="replace") as fh:
             return self.import_text(profile_id, fh.read())
 
     def clear(self, profile_id: str) -> Dict[str, Any]:

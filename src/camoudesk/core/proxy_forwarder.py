@@ -126,7 +126,7 @@ class ProxyForwarder:
         self._on_error = on_error
         self._reported: Set[str] = set()
         self._server: Optional[asyncio.AbstractServer] = None
-        self._conns: Set["asyncio.Task[None]"] = set()
+        self._conns: Set[asyncio.Task[None]] = set()
         self._username = unquote(upstream.username or "")
         self._password = unquote(upstream.password or "")
         token = base64.b64encode(f"{self._username}:{self._password}".encode()).decode()
@@ -236,7 +236,7 @@ class ProxyForwarder:
                 ),
                 _CONNECT_TIMEOUT,
             )
-        except (OSError, asyncio.TimeoutError, ssl.SSLError) as exc:
+        except (TimeoutError, OSError, ssl.SSLError) as exc:
             raise UpstreamError(
                 f"Upstream proxy {self.upstream.host}:{self.upstream.port} unreachable: {type(exc).__name__}: {exc}"
             ) from exc
@@ -377,7 +377,7 @@ class ProxyForwarder:
             await writer.drain()
             up_writer.close()
             raise
-        except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError) as exc:
+        except (TimeoutError, asyncio.IncompleteReadError, ConnectionError) as exc:
             err = UpstreamError(f"SOCKS5 upstream handshake failed: {type(exc).__name__}")
             self._report(str(err))
             fail(0x01)

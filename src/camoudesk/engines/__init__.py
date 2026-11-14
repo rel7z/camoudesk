@@ -1,13 +1,13 @@
 """Browser engines behind one interface (engines/base.py). Camoufox is the only engine today."""
 
-from functools import lru_cache
+from functools import cache
 
 from camoudesk.engines.base import EngineAdapter
 
 DEFAULT_ENGINE = "camoufox"
 
 
-@lru_cache(maxsize=None)
+@cache
 def get_engine(name: str = DEFAULT_ENGINE) -> EngineAdapter:
     if name == "camoufox":
         from camoudesk.engines.camoufox import CamoufoxEngine

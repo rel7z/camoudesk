@@ -146,16 +146,20 @@ export function Menu({ items, label = "More actions", trigger, up = false, title
     const onDoc = (e) => !inside(e.target) && close();
     const onKey = (e) => e.key === "Escape" && close();
     // The popover is fixed to the viewport: close it rather than leave it behind on scroll/resize.
-    const onScroll = (e) => !(pop.current && pop.current.contains(e.target)) && close();
+    // Scrolls right after opening (focus scrolling the button into view) are not the user's.
+    const openedAt = Date.now();
+    const settled = () => Date.now() - openedAt > 250;
+    const onScroll = (e) => settled() && !(pop.current && pop.current.contains(e.target)) && close();
+    const onResize = () => settled() && close();
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
     window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", close);
+    window.addEventListener("resize", onResize);
     return () => {
       document.removeEventListener("mousedown", onDoc);
       document.removeEventListener("keydown", onKey);
       window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", close);
+      window.removeEventListener("resize", onResize);
     };
   }, [open]);
 

@@ -66,7 +66,7 @@ def read_json(path: Path, default: Any) -> Any:
     if not path.is_file():
         return default
     try:
-        with open(path, "r", encoding="utf-8") as stream:
+        with open(path, encoding="utf-8") as stream:
             return json.load(stream)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise CorruptFileError(f"{path} is unreadable ({exc}); CamouDesk will not overwrite it.") from exc

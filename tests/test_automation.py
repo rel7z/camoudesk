@@ -1,8 +1,7 @@
 """Phase 8: local REST API and Python SDK."""
 
-from contextlib import contextmanager
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import http.client
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path

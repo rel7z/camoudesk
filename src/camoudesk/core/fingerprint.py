@@ -114,7 +114,7 @@ def load_saved_fingerprint(profile_dir: Path) -> Dict[str, Any] | None:
     if not fp_path.is_file():
         return None
     try:
-        with open(fp_path, "r", encoding="utf-8") as stream:
+        with open(fp_path, encoding="utf-8") as stream:
             data = json.load(stream)
         if isinstance(data, dict) and "navigator" in data and "screen" in data:
             return data

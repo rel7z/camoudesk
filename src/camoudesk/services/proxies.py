@@ -7,11 +7,11 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 from urllib.parse import unquote
 
+from camoudesk.core import providers
 from camoudesk.core.launcher import resolve_network, session_key
+from camoudesk.core.providers import ProviderApiError
 from camoudesk.core.proxy import check_proxy_config
 from camoudesk.core.proxy_parse import parse_proxy_line, parse_proxy_list
-from camoudesk.core import providers
-from camoudesk.core.providers import ProviderApiError
 from camoudesk.models.profile import ProxyConfig
 from camoudesk.models.proxy import SavedProxy
 from camoudesk.services.errors import Conflict, Invalid, NotFound

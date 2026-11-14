@@ -14,9 +14,9 @@ WebGL on the same Metal device as a headed one.
 """
 
 import os
+from pathlib import Path
 import sys
 import threading
-from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from camoudesk.core.jsonstore import atomic_write_json, locked, read_json
@@ -89,10 +89,9 @@ def ensure(app_dir: Path, binary: Optional[str] = None) -> Optional[Gpu]:
 
 def _probe_and_store(app_dir: Path, binary: str) -> Optional[Gpu]:
     from camoufox.host_rendering import host_gpu as camoufox_host_gpu
+    import camoufox.utils as cu
 
     from camoudesk.core.launcher import minimal_env
-
-    import camoufox.utils as cu
 
     probe = getattr(cu, "_camoudesk_original_host_gpu", camoufox_host_gpu)
     try:

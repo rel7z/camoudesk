@@ -31,6 +31,8 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.6.0",
+    "mypy>=1.11",
+    "pre-commit>=3.7",
 ]
 
 [project.scripts]
@@ -42,10 +44,49 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "camoudesk.ui" = ["frontend/*", "frontend/*/*"]
+"camoudesk.core" = ["*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "live_browser: integration tests that launch a real Camoufox browser binary",
+    "ui: end-to-end UI tests (Camoufox drives the frontend against the mock bridge)",
 ]
+
+[tool.ruff]
+line-length = 140
+target-version = "py311"
+src = ["src", "tests"]
+extend-exclude = ["build", "dist", "src/camoudesk/ui/frontend"]
+
+[tool.ruff.lint]
+# Errors, pyflakes, import sorting, bugbear, pyupgrade-lite. Style is not enforced beyond that.
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",   # long lines: wrapped where it reads better, not by rule
+    "E731",   # small lambdas in route tables
+    "B008",   # dataclass field(default_factory=...) style calls
+    "UP006", "UP007", "UP035", "UP045",  # typing.Dict/Optional kept for readability and 3.11 compatibility
+]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+known-first-party = ["camoudesk"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "B017"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+packages = ["camoudesk"]
+ignore_missing_imports = true
+warn_unused_ignores = false
+# Gradual: strict where the architecture lives, lenient for the older modules.
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["camoudesk.services.*", "camoudesk.engines.*", "camoudesk.models.*", "camoudesk.core.events", "camoudesk.core.providers.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true

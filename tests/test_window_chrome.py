@@ -2,10 +2,10 @@
 
 from pathlib import Path
 
-from camoudesk.ui import window_chrome
-from camoudesk.ui.api import DesktopBridgeApi
 from camoudesk.core.storage import ProfileStore
 from camoudesk.manager.process_manager import ProcessManager
+from camoudesk.ui import window_chrome
+from camoudesk.ui.api import DesktopBridgeApi
 
 
 def test_theme_maps_to_appearance_and_page_background() -> None:
@@ -18,7 +18,7 @@ def test_theme_maps_to_appearance_and_page_background() -> None:
 def test_backgrounds_match_stylesheet() -> None:
     css = (Path(window_chrome.__file__).parent / "frontend" / "styles.css").read_text()
     for theme, rgb in window_chrome.THEME_BG.items():
-        assert "#%02x%02x%02x" % rgb in css.lower(), theme
+        assert "#{:02x}{:02x}{:02x}".format(*rgb) in css.lower(), theme
 
 
 def test_theme_change_notifies_listener(tmp_path: Path) -> None:

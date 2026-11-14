@@ -24,8 +24,8 @@ Full browser automation of a saved profile runs in your own script through the P
 (``camoudesk.sdk.open_profile``): Playwright cannot serve a persistent profile over a socket.
 """
 
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import re
 import threading

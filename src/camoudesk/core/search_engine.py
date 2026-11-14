@@ -221,6 +221,8 @@ def camoufox_resources_dir() -> Optional[Path]:
 
 def camoufox_app_name(resources: Optional[Path]) -> str:
     """Services.appinfo.name of the build (the [App] Name in application.ini)."""
+    if resources is None:
+        return "Camoufox"
     try:
         for line in (resources / "application.ini").read_text(encoding="utf-8").splitlines():
             key, _, value = line.partition("=")
@@ -237,6 +239,8 @@ def policy_prefs(resources: Optional[Path]) -> Dict[str, str]:
     The values must equal what Firefox stores itself: the Default name, and the Remove list as
     JavaScript's JSON.stringify writes it.
     """
+    if resources is None:
+        return {}
     try:
         policies = json.loads((resources / "distribution" / "policies.json").read_text(encoding="utf-8"))
         search = policies["policies"]["SearchEngines"]

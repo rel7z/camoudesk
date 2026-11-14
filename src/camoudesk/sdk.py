@@ -18,7 +18,7 @@ import os
 import sys
 from typing import Any, Iterator, List, Optional
 
-from camoudesk.core.launcher import ensure_location, profile_camoufox_kwargs, resolve_network
+from camoudesk.core.launcher import ensure_location, resolve_network
 from camoudesk.core.proxy_store import ProxyStore
 from camoudesk.core.storage import ProfileStore
 from camoudesk.models.profile import Profile

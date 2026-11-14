@@ -8,8 +8,8 @@ import webview
 
 from camoudesk.core.storage import ProfileStore
 from camoudesk.services.context import AppContext
-from camoudesk.ui.api import DesktopBridgeApi
 from camoudesk.ui import window_chrome
+from camoudesk.ui.api import DesktopBridgeApi
 from camoudesk.ui.single_instance import InstanceLock, activate_existing
 
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
@@ -40,6 +40,7 @@ def main() -> None:
         background_color="#0f1115",
         text_select=True,
     )
+    assert window is not None  # create_window returns the window it created
 
     def _push_status(**_: object) -> None:
         # Called from background threads whenever a browser starts, stops, exits or warns.

@@ -15,7 +15,6 @@ from camoudesk.core import search_engine
 from camoudesk.core.fingerprint import ensure_profile_fingerprint, is_preset, preset_payload
 from camoudesk.models.profile import Profile, ProxyConfig
 
-
 # Timezone/locale value meaning "match the network": the proxy's exit location when one is
 # configured (resolved by the caller), otherwise the host's own settings (no spoofing).
 AUTO = "auto"

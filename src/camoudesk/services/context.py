@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from camoudesk.core.events import EventBus
-from camoudesk.engines import EngineAdapter, get_engine
 from camoudesk.core.provider_store import ProviderStore
 from camoudesk.core.proxy_store import ProxyStore
 from camoudesk.core.settings_store import SettingsStore
 from camoudesk.core.storage import ProfileStore
+from camoudesk.engines import EngineAdapter, get_engine
 
 if TYPE_CHECKING:  # pragma: no cover
     from camoudesk.manager.process_manager import ProcessManager
