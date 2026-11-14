@@ -45,7 +45,7 @@ class TestPreview(PreviewCase):
         before = sorted(p.name for p in self.store.app_dir.rglob("*"))
         pv = self.preview("macos")
         self.assertEqual(sorted(p.name for p in self.store.app_dir.rglob("*")), before)
-        self.assertEqual(set(pv), {"token", "os", "summary"})
+        self.assertEqual(set(pv), {"token", "os", "summary", "canvas_real"})
 
     def test_mismatched_used_or_expired_tokens_are_ignored(self) -> None:
         pv = self.preview("linux")
@@ -87,3 +87,44 @@ class TestPreview(PreviewCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRealDevicePresets(PreviewCase):
+    def test_preset_preview_creates_a_profile_with_that_recorded_device(self) -> None:
+        pv = self.api.fingerprint_preview("windows", None, "preset")["data"]
+        self.assertEqual(pv["summary"]["source"], "preset")
+        row = self.api.profiles_create({"name": "R", "os": "windows", "fp_preview": pv["token"]})["data"]
+        self.assertEqual(row["fingerprint_summary"], pv["summary"])
+        saved = self.saved_fp(row["id"])
+        self.assertEqual(saved["_camoudesk_source"], "preset")
+        self.assertIn("rv:", row["fingerprint_summary"]["user_agent"])
+
+    def test_preset_launch_kwargs_and_regenerate_keep_the_source(self) -> None:
+        from camoudesk.core.launcher import profile_camoufox_kwargs, resolve_network
+
+        pv = self.api.fingerprint_preview("linux", None, "preset")["data"]
+        row = self.api.profiles_create({"name": "L", "os": "linux", "fp_preview": pv["token"]})["data"]
+        prof = self.store.get_profile(row["id"])
+        kw, _ = profile_camoufox_kwargs(prof, self.store, resolve_network(prof), headless=True)
+        self.assertIn("fingerprint_preset", kw)
+        self.assertNotIn("fingerprint", kw)
+        self.assertNotIn("_camoudesk_source", kw["fingerprint_preset"])
+        self.assertIs(kw["canvas_noise"], True)  # another OS than this Mac: covered
+        again = self.api.profiles_regenerate_fingerprint(row["id"])["data"]
+        self.assertEqual(again["fingerprint_summary"]["source"], "preset")
+        generated = self.api.profiles_regenerate_fingerprint(row["id"], None, "generated")["data"]
+        self.assertEqual(generated["fingerprint_summary"]["source"], "generated")
+        moved = self.store.update_profile(row["id"], {"os": "windows"})
+        self.assertEqual(moved.fingerprint_summary["source"], "generated")
+
+    def test_unavailable_preset_screen_is_a_clear_error(self) -> None:
+        from camoufox.fingerprints import load_presets
+
+        from camoudesk.core.fingerprint import _browser_major
+
+        presets = load_presets(_browser_major() or None)["presets"]["macos"]  # the file the running Firefox uses
+        recorded = {(p["screen"]["width"], p["screen"]["height"]) for p in presets}
+        size = next(f"{w}x{h}" for w, h in ((1366, 768), (1600, 900), (1920, 1200), (2048, 1152), (3000, 2000)) if (w, h) not in recorded)
+        res = self.api.fingerprint_preview("macos", size, "preset")
+        self.assertFalse(res["ok"])
+        self.assertIn("No recorded real macos device", res["error"])

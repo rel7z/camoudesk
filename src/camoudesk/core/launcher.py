@@ -12,7 +12,7 @@ import os
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from camoudesk.core import search_engine
-from camoudesk.core.fingerprint import ensure_profile_fingerprint
+from camoudesk.core.fingerprint import ensure_profile_fingerprint, is_preset, preset_payload
 from camoudesk.models.profile import Profile, ProxyConfig
 
 
@@ -109,7 +109,7 @@ def build_camoufox_kwargs(
     locale: str = "en-US",
     block_webrtc: bool = True,
     humanize: bool = True,
-    canvas_noise: bool = True,
+    canvas_noise: Optional[bool] = True,
     headless: bool = False,
     geoip: Optional[str] = None,
     webgl_config: Optional[List[str]] = None,
@@ -126,15 +126,21 @@ def build_camoufox_kwargs(
     kwargs: Dict[str, Any] = {
         "persistent_context": True,
         "user_data_dir": user_data_dir,
-        "fingerprint": saved_fingerprint,
         "i_know_what_im_doing": True,
         "os": profile_os,
         "block_webrtc": block_webrtc,
         "humanize": humanize,
-        # Avoid Camoufox nested host_gpu() subprocess probe which can deadlock Juggler pipes on macOS.
+        # True covers the canvas. None lets Camoufox show the real one, and is only passed after
+        # core.host_gpu stored the host's GPU, so Camoufox never runs its nested host_gpu() probe
+        # (which can deadlock Juggler pipes on macOS). See profile_camoufox_kwargs.
         "canvas_noise": canvas_noise,
         "headless": headless,
     }
+    # A recorded real device is applied by Camoufox's preset path; an fpgen sample as-is.
+    if is_preset(saved_fingerprint):
+        kwargs["fingerprint_preset"] = preset_payload(saved_fingerprint)
+    else:
+        kwargs["fingerprint"] = saved_fingerprint
     if locale and locale != AUTO:
         kwargs["locale"] = locale
     if config:
@@ -366,6 +372,21 @@ def _search_choice(store: Any) -> Optional[str]:
     return choice if choice in search_engine.CHOICES else None
 
 
+def canvas_policy(app_dir: Any, profile: Profile, saved_fp: Dict[str, Any]) -> Optional[bool]:
+    """Camoufox's canvas_noise for a profile: True covers the canvas; None (fpgen identity) or
+    False (recorded real device, whose GPU Camoufox treats as named) shows the real one, only when
+    the identity claims this host's OS and GPU (core/host_gpu.py)."""
+    from camoudesk.core import host_gpu
+    from camoudesk.core.fingerprint import is_preset
+
+    ov = profile.fp_overrides
+    named, off = bool(ov.get("webgl")), bool(ov.get("block_webgl"))
+    if is_preset(saved_fp):
+        renderer = (saved_fp.get("webgl") or {}).get("unmaskedRenderer") or ""
+        return False if host_gpu.real_canvas(app_dir, profile.os, named, off, claimed_renderer=renderer) else True
+    return None if host_gpu.real_canvas(app_dir, profile.os, named, off) else True
+
+
 def profile_camoufox_kwargs(
     profile: Profile, store: Any, network: Network, headless: bool
 ) -> "tuple[Dict[str, Any], Optional[str]]":
@@ -388,7 +409,14 @@ def profile_camoufox_kwargs(
         prefs["permissions.default.geo"] = 2
     elif geo_mode == "prompt":
         prefs["permissions.default.geo"] = 0
+    # Canvas: Firefox never perturbs pixels, so a profile claiming this Mac's OS and GPU shows its
+    # real canvas; any other identity would show this Mac's rendering, so it stays covered.
+    from camoudesk.core import host_gpu
+
+    host_gpu.install(store.app_dir)
+    canvas_noise = canvas_policy(store.app_dir, profile, saved_fp)
     kwargs = build_camoufox_kwargs(
+        canvas_noise=canvas_noise,
         profile_os=profile.os,
         user_data_dir=str(ff_dir),
         saved_fingerprint=saved_fp,

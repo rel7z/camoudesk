@@ -7,7 +7,7 @@ import { LOCALES, OS_LABELS, copyText, gpuLabel, randomName, randomOs, timezones
 import { Icon } from "./icons.js";
 import { EvomiFields } from "./Evomi.js";
 import { ProxyLineInput, ProxySummary, proxyLineText } from "./ProxyLine.js";
-import { Button, CountryChip, Field, IconButton, Segmented, Select, Tabs, TextArea, TextInput, Toggle } from "./ui.js";
+import { Button, CountryChip, Field, IconButton, Menu, Segmented, Select, Tabs, TextArea, TextInput, Toggle } from "./ui.js";
 
 const PROVIDER_KEYS = ["country", "region", "city", "mode", "lifetime"];
 
@@ -254,13 +254,35 @@ function GeneralTab({ f, set, disabled, locked, isNew }) {
 }
 
 // New profile: the device this profile will be. Creating it keeps exactly this fingerprint.
-function DevicePreview({ preview, onAnother }) {
+const SOURCE_OPTIONS = [
+  { value: "generated", label: "Generated" },
+  { value: "preset", label: "Real device" },
+];
+const SOURCE_HELP = {
+  generated: "A unique device sampled from statistics of real Firefox users (fpgen).",
+  preset: "One of Camoufox's recorded real devices: real values, but other users of the same preset share them.",
+};
+
+// Canvas status: only an identity that claims this Mac (macOS and its GPU) can show its real canvas;
+// any other has its canvas readings covered, which some sites notice.
+function CanvasLine({ real, os }) {
+  return real
+    ? html`<strong class="text-ok">Real — matches this Mac</strong>`
+    : html`<strong class="text-warn" title="Only a profile matching this Mac (macOS and its graphics card) can show a real canvas. Others are covered, which some sites notice.">
+        Covered${os && os !== "macos" ? ` — a ${OS_LABELS[os]} canvas can't be drawn on this Mac` : " — graphics card differs from this Mac"}</strong>`;
+}
+
+function DevicePreview({ preview, onAnother, fpSource, setFpSource }) {
   const sm = preview?.summary;
   return html`<div class="device-card">
     <div class="device-head">
       <strong>Device</strong>
-      <${Button} size="sm" icon="dice" busy=${preview?.loading} onClick=${onAnother}>Another device<//>
+      <div class="inline">
+        <${Segmented} value=${fpSource} onChange=${setFpSource} options=${SOURCE_OPTIONS} />
+        <${Button} size="sm" icon="dice" busy=${preview?.loading} onClick=${onAnother}>Another device<//>
+      </div>
     </div>
+    <p class="muted small">${SOURCE_HELP[fpSource]}</p>
     ${preview?.error
       ? html`<p class="text-err small">${preview.error}</p>`
       : sm
@@ -270,15 +292,17 @@ function DevicePreview({ preview, onAnother }) {
           <span>CPU cores</span><strong>${sm.cores || "—"}</strong>
           <span>Graphics</span><strong title=${sm.gpu}>${gpuLabel(sm.gpu) || "—"}</strong>
           <span>User agent</span><strong class="mono wrap">${sm.user_agent || "—"}</strong>
+          <span>Canvas</span><${CanvasLine} real=${preview.canvas_real} os=${sm.os} />
         </div>`
       : html`<div class="skeleton device-skeleton" />`}
     <p class="muted small">Unique to this profile and kept on every launch. Websites see this device.</p>
   </div>`;
 }
 
-function FingerprintTab({ f, set, row, disabled, preview, onAnother }) {
+function FingerprintTab({ f, set, row, disabled, preview, onAnother, fpSource, setFpSource }) {
   const [opts, setOpts] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [regenSource, setRegenSource] = useState(row?.fingerprint_summary?.source || "generated");
   const [screen, setScreen] = useState(f.fp_screen);
   useEffect(() => {
     let live = true;
@@ -300,7 +324,7 @@ function FingerprintTab({ f, set, row, disabled, preview, onAnother }) {
     if (!ok) return;
     setBusy(true);
     try {
-      const updated = await call("profiles_regenerate_fingerprint", row.id, screen);
+      const updated = await call("profiles_regenerate_fingerprint", row.id, screen, regenSource);
       await refreshProfiles();
       set({ fp_screen: updated.fp_overrides?.screen || "" });
       toast(`New fingerprint generated (${updated.fingerprint_summary?.screen || "any screen"})`, "success");
@@ -317,15 +341,18 @@ function FingerprintTab({ f, set, row, disabled, preview, onAnother }) {
       <span>CPU cores</span><strong>${fp.cores || "—"}</strong>
       <span>Graphics</span><strong title=${fp.gpu}>${f.fp_webgl ? f.fp_webgl.split("|||")[1].replace(/, or similar$/, "") + " (override)" : gpuLabel(fp.gpu) || "—"}</strong>
       <span>User agent</span><strong class="mono wrap">${fp.user_agent || "—"}</strong>
-    </div>` : html`<${DevicePreview} preview=${preview} onAnother=${onAnother} />`}
+      <span>Source</span><strong>${fp.source === "preset" ? "Real device (recorded)" : "Generated (unique)"}</strong>
+      <span>Canvas</span><${CanvasLine} real=${row.canvas_real} os=${row.os} />
+    </div>` : html`<${DevicePreview} preview=${preview} onAnother=${onAnother} fpSource=${fpSource} setFpSource=${setFpSource} />`}
 
     <div class="grid-2">
       <${Field} label="Screen size" hint=${row ? "Applied when you generate a new fingerprint" : "The fingerprint is generated for this size"}>
         <${Select} value=${screen} disabled=${disabled || !opts} onChange=${(v) => { setScreen(v); if (!row) set({ fp_screen: v }); }}
           options=${[{ value: "", label: "Any realistic size" }, ...screens.map((x) => ({ value: x, label: x.replace("x", " × ") }))]} />
       <//>
-      ${row ? html`<div class="field"><span class="field-label"> </span>
-        <${Button} icon="refresh" busy=${busy} disabled=${disabled} onClick=${regenerate}>Generate new fingerprint<//></div>` : html`<div />`}
+      ${row ? html`<div class="field"><span class="field-label">New fingerprint from</span>
+        <div class="inline"><${Segmented} value=${regenSource} disabled=${disabled} onChange=${setRegenSource} options=${SOURCE_OPTIONS} />
+        <${Button} icon="refresh" busy=${busy} disabled=${disabled} onClick=${regenerate}>Generate<//></div></div>` : html`<div />`}
     </div>
 
     <${Field} label="Graphics card (WebGL)" wide hint="Only devices Firefox has really been seen on for this system are offered.">
@@ -480,13 +507,14 @@ export function ProfileDrawer() {
   const [preview, setPreview] = useState(null);
   const previewSeq = useRef(0);
   const randomNameRef = useRef("");
-  const loadPreview = async (os, screen) => {
+  const [fpSource, setFpSource] = useState("generated"); // new profile: fpgen sample or recorded real device
+  const loadPreview = async (os, screen, source = fpSource, matchHost = false) => {
     const id = ++previewSeq.current;
-    const key = { os, screen: screen || "" };
+    const key = { os, screen: screen || "", source };
     setPreview((prev) => ({ ...(prev && prev.os === os ? prev : {}), ...key, loading: true }));
     try {
-      const res = await call("fingerprint_preview", os, screen || null);
-      if (id === previewSeq.current) setPreview({ ...key, token: res.token, summary: res.summary });
+      const res = await call("fingerprint_preview", os, screen || null, source, matchHost);
+      if (id === previewSeq.current) setPreview({ ...key, os: res.os, token: res.token, summary: res.summary, canvas_real: res.canvas_real });
     } catch (err) {
       if (id === previewSeq.current) setPreview({ ...key, error: err.message });
     }
@@ -499,15 +527,16 @@ export function ProfileDrawer() {
     setInitial(JSON.stringify(init));
     setCheck(null);
     setPreview(null);
+    setFpSource("generated");
     randomNameRef.current = "";
   }, [drawer?.id, drawer && !row]);
 
   // A new profile always shows the device it will get; changing system or screen re-previews.
   useEffect(() => {
     if (!drawer || drawer.id || !f) return;
-    if (preview && preview.os === f.os && preview.screen === (f.fp_screen || "")) return;
-    loadPreview(f.os, f.fp_screen);
-  }, [drawer && !drawer.id, f?.os, f?.fp_screen, preview === null]);
+    if (preview && preview.os === f.os && preview.screen === (f.fp_screen || "") && preview.source === fpSource) return;
+    loadPreview(f.os, f.fp_screen, fpSource);
+  }, [drawer && !drawer.id, f?.os, f?.fp_screen, fpSource, preview === null]);
 
   const dirty = f && initial !== JSON.stringify(f);
   const requestClose = async () => {
@@ -529,13 +558,13 @@ export function ProfileDrawer() {
   const set = (patch) => setF((prev) => ({ ...prev, ...patch }));
   const tab = drawer.tab || "general";
   const isNew = !drawer.id;
-  const randomize = () => {
-    const os = randomOs();
+  const randomize = (matchHost) => {
+    const os = matchHost ? "macos" : randomOs(); // "Match this Mac": its OS (and, for real devices, its GPU)
     const typed = f.name.trim() && f.name !== randomNameRef.current; // never replace a name you typed
     const name = typed ? f.name : randomName();
     randomNameRef.current = typed ? randomNameRef.current : name;
     set({ os, name, fp_webgl: "", fp_screen: "" });
-    loadPreview(os, "");
+    loadPreview(os, "", fpSource, matchHost);
   };
 
   const submit = async (e) => {
@@ -581,7 +610,10 @@ export function ProfileDrawer() {
           ${row ? html`<span class="muted small">${OS_LABELS[row.os]} · ${row.proxy_label}</span>` : html`<span class="muted small">Settings start from your defaults</span>`}
         </div>
         <div class="inline">
-          ${isNew ? html`<${Button} size="sm" icon="dice" busy=${preview?.loading} onClick=${randomize} title="Random system, device and name">Randomize<//>` : null}
+          ${isNew ? html`<${Menu} title="Randomize" items=${[
+              { icon: "dice", label: "Random device (any system)", onClick: () => randomize(false) },
+              { icon: "fingerprint", label: "Match this Mac (real canvas)", onClick: () => randomize(true) },
+            ]} trigger=${(toggle) => html`<${Button} size="sm" icon="dice" busy=${preview?.loading} onClick=${toggle} title="Random system, device and name">Randomize<//>`} />` : null}
           <${IconButton} icon="x" title="Close (Esc)" onClick=${requestClose} />
         </div>
       </header>
@@ -594,7 +626,7 @@ export function ProfileDrawer() {
         ${tab === "general" ? html`<${GeneralTab} f=${f} set=${set} disabled=${false} locked=${running} isNew=${isNew} />` : null}
         ${tab === "network" ? html`<${NetworkTab} f=${f} set=${set} row=${row} disabled=${running} check=${check} setCheck=${setCheck} lineCtl=${lineCtl} />` : null}
         ${tab === "fingerprint" ? html`<${FingerprintTab} f=${f} set=${set} row=${row} disabled=${running}
-          preview=${preview} onAnother=${() => loadPreview(f.os, f.fp_screen)} />` : null}
+          preview=${preview} onAnother=${() => loadPreview(f.os, f.fp_screen)} fpSource=${fpSource} setFpSource=${setFpSource} />` : null}
         ${tab === "cookies" ? html`<${CookiesTab} row=${row} disabled=${running} />` : null}
         ${tab === "advanced" ? html`<${AdvancedTab} f=${f} set=${set} row=${row} disabled=${running} />` : null}
       </div>

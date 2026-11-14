@@ -577,6 +577,12 @@ class ProcessManager:
             return {"ok": False, "error": "This profile's saved proxy was deleted; choose another proxy or Direct."}
         if network.needs_check:
             network = self._check_and_resolve(profile, network)
+        if chosen == MODE_DIRECT:
+            # The direct launch spec is computed here, in the GUI process: learn this Mac's GPU first
+            # (once per Camoufox build) so a profile claiming this Mac can show its real canvas.
+            from camoudesk.core import host_gpu
+
+            host_gpu.ensure(self.store.app_dir)
         if network.rotating:
             self._proxy_logger(profile.id)(
                 "Rotating proxy session: the exit IP changes on every request, so sites may see this "

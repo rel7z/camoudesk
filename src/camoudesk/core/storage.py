@@ -441,13 +441,14 @@ class ProfileStore:
                     target.os = new_os
                     # A GPU recorded for the old OS is not valid for the new one.
                     target.fp_overrides.pop("webgl", None)
+                    source = target.fingerprint_summary.get("source") or "generated"  # keep real devices real
                     try:
                         _, summary = generate_and_save_fingerprint(
-                            self.profile_dir(safe_id), new_os, parse_screen(target.fp_overrides.get("screen"))
+                            self.profile_dir(safe_id), new_os, parse_screen(target.fp_overrides.get("screen")), source=source
                         )
                     except ValueError:
                         target.fp_overrides.pop("screen", None)
-                        _, summary = generate_and_save_fingerprint(self.profile_dir(safe_id), new_os)
+                        _, summary = generate_and_save_fingerprint(self.profile_dir(safe_id), new_os, source=source)
                     target.fingerprint_summary = summary_dict(summary)
 
             self._write_entries(entries)
@@ -455,9 +456,10 @@ class ProfileStore:
 
     _KEEP = object()
 
-    def regenerate_fingerprint(self, profile_id: str, screen: Any = _KEEP) -> Profile:
+    def regenerate_fingerprint(self, profile_id: str, screen: Any = _KEEP, source: Optional[str] = None) -> Profile:
         """New fingerprint for the profile's OS. ``screen``: "WxH" to pin, "" for any size,
-        omitted to keep the previously pinned size."""
+        omitted to keep the previously pinned size. ``source``: "generated" or "preset" (a recorded
+        real device); omitted keeps the current one."""
         safe_id = sanitize_profile_id(profile_id)
         with self._locked():
             entries = self._read_entries()
@@ -473,7 +475,10 @@ class ProfileStore:
                     target.fp_overrides.pop("screen", None)
             pdir = self.profile_dir(safe_id)
             pdir.mkdir(parents=True, exist_ok=True)
-            _, summary = generate_and_save_fingerprint(pdir, target.os, parse_screen(target.fp_overrides.get("screen")))
+            chosen = source or target.fingerprint_summary.get("source") or "generated"
+            if chosen not in ("generated", "preset"):
+                raise ValueError("Fingerprint source must be generated or preset")
+            _, summary = generate_and_save_fingerprint(pdir, target.os, parse_screen(target.fp_overrides.get("screen")), source=chosen)
             target.fingerprint_summary = summary_dict(summary)
             self._write_entries(entries)
             return target

@@ -73,6 +73,9 @@ def open_profile(
         raise ProfileBusyError("This profile is in the trash; restore it first.")
     if _running_elsewhere(store, profile.id):
         raise ProfileBusyError("This profile is already running; stop it first.")
+    from camoudesk.core import host_gpu
+
+    host_gpu.ensure(store.app_dir)  # before Camoufox(): its own probe would run inside the launch
     proxies = ProxyStore(store.app_dir)
     network = resolve_network(profile, proxies)
     if network.missing_saved_proxy:

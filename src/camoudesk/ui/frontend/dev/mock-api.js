@@ -124,13 +124,14 @@ export function installMockApi() {
     }),
     folders_rename: guard((old, name) => { let n = 0; profiles.forEach((p) => p.folder === old && (p.folder = name, n++)); return { changed: n }; }),
     profiles_get: guard((id) => ({ ...find(id) })),
-    fingerprint_preview: guard(async (os, screen) => {
+    fingerprint_preview: guard(async (os, screen, source = "generated", matchHost = false) => {
       await sleep(250);
+      if (matchHost) os = "macos";
       const w = screen ? screen.split("x") : [[1920, 1080], [1536, 864], [2560, 1440], [1440, 900], [1366, 768]][Math.floor(Math.random() * 5)];
       const token = Math.random().toString(16).slice(2);
-      const summary = { ...FP[os], os, screen: `${w[0]}x${w[1]}`, cores: [4, 8, 12, 16][Math.floor(Math.random() * 4)] };
+      const summary = { ...FP[os], os, screen: `${w[0]}x${w[1]}`, cores: [4, 8, 12, 16][Math.floor(Math.random() * 4)], source };
       previews[token] = summary;
-      return { token, os, summary };
+      return { token, os, summary, canvas_real: os === "macos" };
     }),
     profiles_create: guard((d) => {
       if (!d.name) throw new Error("Profile name is required");

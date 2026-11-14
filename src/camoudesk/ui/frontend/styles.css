@@ -58,6 +58,7 @@ button:disabled { cursor: default; }
 .small { font-size: 12px; }
 .text-err { color: var(--err); }
 .text-ok { color: var(--ok); }
+.text-warn { color: var(--warn); }
 
 /* ---------------------------------------------------------------- layout */
 .app { display: grid; grid-template-columns: 216px 1fr; height: 100%; }

@@ -28,6 +28,9 @@ def run_worker(
         print(f"[ERROR] Profile '{profile_id}' not found.", file=sys.stderr, flush=True)
         return 2
 
+    from camoudesk.core import host_gpu
+
+    host_gpu.ensure(store.app_dir)  # before Camoufox(): its own probe would run inside the launch
     network = resolve_network(profile, ProxyStore(store.app_dir))
     if network.missing_saved_proxy:
         print("[ERROR] This profile's saved proxy was deleted; choose another proxy or Direct.", file=sys.stderr, flush=True)
@@ -109,6 +112,9 @@ def run_cookie_import(profile_id: str, cookie_file: str) -> int:
     except (OSError, ValueError) as exc:
         print(f"[ERROR] Could not read cookies: {exc}", file=sys.stderr, flush=True)
         return 2
+    from camoudesk.core import host_gpu
+
+    host_gpu.ensure(store.app_dir)  # before Camoufox(): its own probe would run inside the launch
     network = resolve_network(profile, ProxyStore(store.app_dir))
     kwargs, _ = profile_camoufox_kwargs(profile, store, network, headless=True)
     try:

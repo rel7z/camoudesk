@@ -197,6 +197,7 @@ class DesktopBridgeApi:
                 "proxy_parts": _proxy_parts(ProxyConfig.from_url(profile.proxy)) if profile.proxy else None,
                 "proxy_missing": net.missing_saved_proxy,
                 "provider": provider,
+                "canvas_real": self._canvas_real(profile),
                 "proxy_country": net.country_code,
                 "effective_timezone": net.timezone,
                 "effective_locale": net.locale,
@@ -208,6 +209,17 @@ class DesktopBridgeApi:
             }
         )
         return data
+
+    def _canvas_real(self, profile: Profile) -> bool:
+        """Whether this profile shows its real canvas (it claims this Mac's OS and GPU)."""
+        from camoudesk.core.fingerprint import load_saved_fingerprint
+        from camoudesk.core.launcher import canvas_policy
+
+        try:
+            saved = load_saved_fingerprint(self.store.profile_dir(profile.id)) or {}
+            return canvas_policy(self.store.app_dir, profile, saved) is not True
+        except Exception:
+            return False
 
     def _normalize(self, payload: Dict[str, Any], current: Optional[Profile] = None) -> Dict[str, Any]:
         data = dict(payload or {})
@@ -309,17 +321,28 @@ class DesktopBridgeApi:
     _PREVIEW_MAX = 20
 
     @_bridge
-    def fingerprint_preview(self, profile_os: str, screen: Optional[str] = None) -> Dict[str, Any]:
+    def fingerprint_preview(self, profile_os: str, screen: Optional[str] = None, source: str = "generated",
+                            match_host: bool = False) -> Dict[str, Any]:
         """A new device for the New profile form: its summary, and a one-time token that makes
-        profiles_create use exactly this fingerprint. The fingerprint itself stays here."""
-        from camoudesk.core.fingerprint import generate_verified_fingerprint
-        from camoudesk.core.fingerprint import summary_dict
+        profiles_create use exactly this fingerprint. The fingerprint itself stays here.
 
-        os_key = validate_os_target(profile_os)
+        ``source``: "generated" (fpgen, unique) or "preset" (a recorded real device).
+        ``match_host``: a device this Mac can show the real canvas for (its OS; for presets its GPU).
+        """
+        from camoudesk.core import host_gpu
+        from camoudesk.core.fingerprint import generate_preset_fingerprint, generate_verified_fingerprint
+
+        os_key = validate_os_target(host_gpu.HOST_OS if match_host else profile_os)
         pinned = parse_screen(screen) if screen else None
         if screen and not pinned:
             raise ValueError(f"Invalid screen size '{screen}'")
-        fp = generate_verified_fingerprint(os_key, pinned)
+        if source not in ("generated", "preset"):
+            raise ValueError("Fingerprint source must be generated or preset")
+        if source == "preset":
+            _known, gpu = host_gpu.cached(self.store.app_dir)
+            fp = generate_preset_fingerprint(os_key, pinned, gpu_renderer=gpu[1] if match_host and gpu else None)
+        else:
+            fp = generate_verified_fingerprint(os_key, pinned)
         token = os.urandom(12).hex()
         now = time.time()
         with self._fp_previews_lock:
@@ -328,7 +351,13 @@ class DesktopBridgeApi:
                 live.pop(min(live, key=lambda k: live[k][2]))
             live[token] = (os_key, fp, now)
             self._fp_previews = live
-        return {"token": token, "os": os_key, "summary": summary_dict(FingerprintSummary.from_fpgen_dict(os_key, fp))}
+        from camoudesk.core.fingerprint import summarize, summary_dict
+        from camoudesk.core.launcher import canvas_policy
+        from camoudesk.models.profile import Profile as _P
+
+        canvas = canvas_policy(self.store.app_dir, _P(id="preview", name="preview", os=os_key), fp)
+        return {"token": token, "os": os_key, "summary": summary_dict(summarize(os_key, fp)),
+                "canvas_real": canvas is not True}
 
     def _take_preview(self, token: Any, os_key: str, screen: Any) -> Optional[Dict[str, Any]]:
         """The previewed fingerprint for ``token`` if it fits this profile (one use only)."""
@@ -380,13 +409,16 @@ class DesktopBridgeApi:
         return self._row(self.store.update_profile(profile_id, data))
 
     @_bridge
-    def profiles_regenerate_fingerprint(self, profile_id: str, screen: Optional[str] = None) -> Dict[str, Any]:
-        """New fingerprint; ``screen`` "WxH" pins the size, "" allows any, None keeps the current pin."""
+    def profiles_regenerate_fingerprint(self, profile_id: str, screen: Optional[str] = None,
+                                        source: Optional[str] = None) -> Dict[str, Any]:
+        """New fingerprint; ``screen`` "WxH" pins the size, "" allows any, None keeps the current pin.
+        ``source`` "generated" / "preset" (recorded real device); None keeps the current source."""
         if self.manager.is_running(profile_id):
             raise ValueError("Stop the running browser before regenerating its fingerprint.")
-        if screen is None:
-            return self._row(self.store.regenerate_fingerprint(profile_id))
-        return self._row(self.store.regenerate_fingerprint(profile_id, screen=screen))
+        kwargs: Dict[str, Any] = {"source": source} if source else {}
+        if screen is not None:
+            kwargs["screen"] = screen
+        return self._row(self.store.regenerate_fingerprint(profile_id, **kwargs))
 
     @_bridge
     def fingerprint_options(self, profile_os: str) -> Dict[str, Any]:

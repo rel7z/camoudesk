@@ -284,6 +284,7 @@ class FingerprintSummary:
     screen: str = ""
     cores: Optional[int] = None
     gpu: str = ""
+    source: str = "generated"  # "generated" (fpgen, unique) or "preset" (a recorded real device)
 
     @classmethod
     def from_fpgen_dict(cls, os_target: str, fp: Dict[str, Any]) -> "FingerprintSummary":
@@ -308,6 +309,7 @@ class FingerprintSummary:
             screen=screen_str,
             cores=nav.get("hardwareConcurrency"),
             gpu=str(gpu_str),
+            source="preset" if fp.get("_camoudesk_source") == "preset" else "generated",
         )
 
 

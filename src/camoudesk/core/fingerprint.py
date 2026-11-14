@@ -13,6 +13,66 @@ from camoudesk.models.profile import FingerprintSummary, validate_os_target
 
 FINGERPRINT_FILENAME = "fingerprint.json"
 _GENERATE_ATTEMPTS = 12
+# A saved fingerprint that is one of Camoufox's recorded real devices (fingerprint-presets*.json)
+# instead of an fpgen sample. Launches pass it as fingerprint_preset=<dict> (see launcher).
+PRESET_MARK = "_camoudesk_source"
+SOURCES = ("generated", "preset")
+
+
+def is_preset(fp: Any) -> bool:
+    return isinstance(fp, dict) and fp.get(PRESET_MARK) == "preset"
+
+
+def preset_payload(fp: Dict[str, Any]) -> Dict[str, Any]:
+    """The preset as Camoufox expects it (without CamouDesk's marker)."""
+    return {k: v for k, v in fp.items() if k != PRESET_MARK}
+
+
+def _browser_major() -> str:
+    try:
+        from camoufox.utils import resolve_verstr
+
+        return str(resolve_verstr(None)).split(".", 1)[0]
+    except Exception:
+        return ""
+
+
+def generate_preset_fingerprint(
+    os_target: str,
+    screen: Optional[Tuple[int, int]] = None,
+    gpu_renderer: Optional[str] = None,
+) -> Dict[str, Any]:
+    """A random recorded real device for ``os_target`` (optionally with this screen or GPU)."""
+    import random
+
+    from camoufox.fingerprints import load_presets
+
+    normalized_os = validate_os_target(os_target)
+    data = load_presets(_browser_major() or None) or {}
+    candidates = [p for p in (data.get("presets") or {}).get(normalized_os, []) if fingerprint_matches_os(p, normalized_os)]
+    if screen:
+        candidates = [p for p in candidates if ((p.get("screen") or {}).get("width"), (p.get("screen") or {}).get("height")) == tuple(screen)]
+    if gpu_renderer:
+        candidates = [p for p in candidates if (p.get("webgl") or {}).get("unmaskedRenderer") == gpu_renderer]
+    if not candidates:
+        what = " with a {}x{} screen".format(*screen) if screen else ""
+        raise ValueError(f"No recorded real {normalized_os} device{what} is available; use a generated fingerprint.")
+    chosen = json.loads(json.dumps(random.choice(candidates)))
+    chosen[PRESET_MARK] = "preset"
+    return chosen
+
+
+def summarize(os_target: str, fp: Dict[str, Any]) -> FingerprintSummary:
+    """Summary of what websites will see; a preset's user agent is the running Firefox's version."""
+    summary = FingerprintSummary.from_fpgen_dict(validate_os_target(os_target), fp)
+    if is_preset(fp):
+        try:
+            from camoufox.fingerprints import from_preset
+
+            summary.user_agent = str(from_preset(preset_payload(fp), _browser_major() or None).get("navigator.userAgent") or summary.user_agent)
+        except Exception:
+            pass
+    return summary
 
 # Every navigator signal must name the same OS: (platform, oscpu, userAgent) markers.
 _OS_MARKERS = {
@@ -107,19 +167,20 @@ def save_fingerprint(profile_dir: Path, os_target: str, fp: Dict[str, Any]) -> F
         raise ValueError(f"That fingerprint is not a consistent {normalized_os} device")
     serializable = json.loads(json.dumps(fp))
     _atomic_write_json(profile_dir / FINGERPRINT_FILENAME, serializable)
-    return FingerprintSummary.from_fpgen_dict(normalized_os, serializable)
+    return summarize(normalized_os, serializable)
 
 
 def generate_and_save_fingerprint(
     profile_dir: Path,
     os_target: str,
     screen: Optional[Tuple[int, int]] = None,
+    source: str = "generated",
 ) -> Tuple[Dict[str, Any], FingerprintSummary]:
-    """Generate a coherent Firefox fingerprint via fpgen and persist it to disk.
+    """Generate a coherent fingerprint (fpgen, or a recorded real device) and persist it.
 
     On failure (e.g. an impossible screen size) the saved fingerprint is left untouched.
     """
-    fp = generate_verified_fingerprint(os_target, screen)
+    fp = generate_preset_fingerprint(os_target, screen) if source == "preset" else generate_verified_fingerprint(os_target, screen)
     return fp, save_fingerprint(profile_dir, os_target, fp)
 
 
@@ -139,7 +200,7 @@ def ensure_profile_fingerprint(
             or (normalized_os == "linux" and "linux" in platform_str)
         )
         if os_matches:
-            summary = FingerprintSummary.from_fpgen_dict(normalized_os, saved)
+            summary = summarize(normalized_os, saved)
             return saved, summary
 
     return generate_and_save_fingerprint(profile_dir, normalized_os)

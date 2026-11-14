@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+import threading
 
 import webview
 
@@ -65,6 +66,15 @@ def main() -> None:
     api.set_proxy_notifier(_push_proxies)
     manager.start_monitor()
     api.sync_api_server()  # local REST API, if enabled in Settings
+
+    def _warm_host_gpu() -> None:
+        # Learn this Mac's GPU once (headless, ~10 s, stored per Camoufox build) so profiles that
+        # claim this Mac's OS can show their real canvas. See core/host_gpu.py.
+        from camoudesk.core import host_gpu
+
+        host_gpu.ensure(store.app_dir)
+
+    threading.Thread(target=_warm_host_gpu, name="camoudesk-host-gpu", daemon=True).start()
 
     def _on_closing() -> None:
         api.shutdown_api_server()
