@@ -43,51 +43,70 @@ class _Server(ThreadingHTTPServer):
 
 
 class ApiServer:
-    def __init__(self, bridge: Any, port: int, token_provider: Callable[[], str]) -> None:
-        self.bridge = bridge
+    """Routes requests to the services (camoudesk/services) through an AppContext."""
+
+    def __init__(self, ctx: Any, port: int, token_provider: Callable[[], str]) -> None:
+        self.ctx = ctx
         self.port = int(port)
         self._token = token_provider
         self._httpd: Optional[_Server] = None
+        profiles = lambda: ctx.profiles_service  # noqa: E731 - created on first use
+        launch = lambda: ctx.launch_service  # noqa: E731
+        identity = lambda: ctx.identity_service  # noqa: E731
+        proxies = lambda: ctx.proxy_service  # noqa: E731
         self._routes = [
             ("GET", re.compile(r"^/v1/health$"), self._health),
-            ("GET", re.compile(r"^/v1/profiles$"), lambda m, b: self._call("profiles_list")),
-            ("POST", re.compile(r"^/v1/profiles$"), lambda m, b: self._call("profiles_create", b, created=True)),
-            ("GET", re.compile(rf"^/v1/profiles/{_ID}$"), lambda m, b: self._call("profiles_get", m[1])),
-            ("PATCH", re.compile(rf"^/v1/profiles/{_ID}$"), lambda m, b: self._call("profiles_update", m[1], b)),
+            ("GET", re.compile(r"^/v1/profiles$"), lambda m, b: self._call(lambda: profiles().rows())),
+            ("POST", re.compile(r"^/v1/profiles$"), lambda m, b: self._call(lambda: profiles().create(b or {}), created=True)),
+            ("GET", re.compile(rf"^/v1/profiles/{_ID}$"), lambda m, b: self._call(lambda: profiles().get(m[1]))),
+            ("PATCH", re.compile(rf"^/v1/profiles/{_ID}$"), lambda m, b: self._call(lambda: profiles().update(m[1], b or {}))),
             ("POST", re.compile(rf"^/v1/profiles/{_ID}/start$"), self._start),
-            ("POST", re.compile(rf"^/v1/profiles/{_ID}/stop$"), lambda m, b: self._call("profiles_stop", m[1])),
+            ("POST", re.compile(rf"^/v1/profiles/{_ID}/stop$"), lambda m, b: self._call(lambda: launch().stop(m[1]))),
             ("GET", re.compile(rf"^/v1/profiles/{_ID}/status$"), self._status),
-            ("POST", re.compile(rf"^/v1/profiles/{_ID}/new-ip$"), lambda m, b: self._call("profiles_new_ip", [m[1]])),
-            ("POST", re.compile(rf"^/v1/profiles/{_ID}/check$"), lambda m, b: self._call("profiles_check_identity", m[1])),
-            ("GET", re.compile(rf"^/v1/profiles/{_ID}/check$"), lambda m, b: self._call("profiles_identity_report", m[1])),
-            ("GET", re.compile(r"^/v1/proxies$"), lambda m, b: self._call("proxies_list")),
-            ("POST", re.compile(rf"^/v1/proxies/{_ID}/check$"), lambda m, b: self._call("proxies_check", m[1])),
+            ("POST", re.compile(rf"^/v1/profiles/{_ID}/new-ip$"), lambda m, b: self._call(lambda: profiles().new_ip([m[1]]))),
+            ("POST", re.compile(rf"^/v1/profiles/{_ID}/check$"), lambda m, b: self._call(lambda: identity().check(m[1]))),
+            ("GET", re.compile(rf"^/v1/profiles/{_ID}/check$"), lambda m, b: self._call(lambda: identity().report(m[1]))),
+            ("GET", re.compile(r"^/v1/proxies$"), lambda m, b: self._call(lambda: proxies().rows())),
+            ("POST", re.compile(rf"^/v1/proxies/{_ID}/check$"), lambda m, b: self._call(lambda: proxies().check(m[1]))),
         ]
 
     # ------------------------------------------------------------------ handlers
 
-    def _call(self, method: str, *args: Any, created: bool = False) -> Tuple[int, Any]:
-        res = getattr(self.bridge, method)(*args)
-        if res.get("ok"):
-            return (201 if created else 200), res.get("data")
-        error = str(res.get("error") or "Request failed")
-        return (404 if "not found" in error.lower() else 400), {"error": error}
+    @staticmethod
+    def _call(fn: Callable[[], Any], created: bool = False) -> Tuple[int, Any]:
+        from camoudesk.services.errors import Conflict, NotFound
+
+        try:
+            result = fn()
+        except NotFound as exc:
+            return 404, {"error": str(exc)}
+        except Conflict as exc:
+            return 409, {"error": str(exc)}
+        except KeyError as exc:
+            return 404, {"error": str(exc.args[0]) if exc.args else "Not found"}
+        except (ValueError, RuntimeError, OSError) as exc:
+            msg = str(exc)
+            return (404 if "not found" in msg.lower() else 400), {"error": msg}
+        if isinstance(result, dict) and result.get("ok") is False:  # manager-style failures
+            error = str(result.get("error") or "Request failed")
+            return (404 if "not found" in error.lower() or "does not exist" in error else 409), {"error": error}
+        return (201 if created else 200), result
 
     def _health(self, m: Any, body: Any) -> Tuple[int, Any]:
         return 200, {"ok": True, "app": "CamouDesk", "version": __version__}
 
     def _start(self, m: Any, body: Any) -> Tuple[int, Any]:
         headless = bool((body or {}).get("headless", False))
-        res = self.bridge.manager.launch(m[1], headless=headless)
+        res = self.ctx.launch_service.launch(m[1], headless=headless)
         if res.get("ok"):
             return 200, {k: v for k, v in res.items() if k != "ok"}
         error = str(res.get("error"))
         return (404 if "does not exist" in error else 409), {"error": error}
 
     def _status(self, m: Any, body: Any) -> Tuple[int, Any]:
-        if self.bridge.store.get_profile(m[1]) is None:
+        if self.ctx.store.get_profile(m[1]) is None:
             return 404, {"error": "Profile not found"}
-        return 200, self.bridge.manager.get_status(m[1])
+        return 200, self.ctx.launch_service.status(m[1])
 
     # ------------------------------------------------------------------ server
 
@@ -178,7 +197,7 @@ class ApiServer:
             httpd.server_close()
 
 
-def sync_with_settings(current: Optional[ApiServer], bridge: Any, settings: Dict[str, Any]) -> Optional[ApiServer]:
+def sync_with_settings(current: Optional[ApiServer], ctx: Any, settings: Dict[str, Any]) -> Optional[ApiServer]:
     """Start, restart or stop the server to match ``settings["api"]``; returns the live server."""
     api_cfg = settings.get("api") or {}
     want = bool(api_cfg.get("enabled"))
@@ -187,6 +206,6 @@ def sync_with_settings(current: Optional[ApiServer], bridge: Any, settings: Dict
         current.stop()
         current = None
     if want and current is None:
-        current = ApiServer(bridge, port, lambda: bridge.settings.get()["api"]["token"])
+        current = ApiServer(ctx, port, lambda: ctx.settings.get()["api"]["token"])
         current.start()
     return current

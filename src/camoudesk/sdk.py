@@ -73,9 +73,10 @@ def open_profile(
         raise ProfileBusyError("This profile is in the trash; restore it first.")
     if _running_elsewhere(store, profile.id):
         raise ProfileBusyError("This profile is already running; stop it first.")
-    from camoudesk.core import host_gpu
+    from camoudesk.engines import get_engine
 
-    host_gpu.ensure(store.app_dir)  # before Camoufox(): its own probe would run inside the launch
+    engine = get_engine()
+    engine.prepare_host(store.app_dir)  # before Camoufox(): its own probe would run inside the launch
     proxies = ProxyStore(store.app_dir)
     network = resolve_network(profile, proxies)
     if network.missing_saved_proxy:
@@ -83,7 +84,7 @@ def open_profile(
     # Same pre-launch location check as the app, so "auto" timezone never falls back to this Mac's.
     network = ensure_location(profile, network, store, proxies, lambda msg: print(f"[CamouDesk] {msg}", file=sys.stderr))
     profile = store.get_profile(profile.id) or profile
-    kwargs, _ = profile_camoufox_kwargs(profile, store, network, headless=headless)
+    kwargs, _ = engine.context_kwargs(profile, store, network, headless=headless)
     kwargs.update(camoufox_overrides)
 
     run_file = store.run_file(profile.id)

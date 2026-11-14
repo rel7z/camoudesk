@@ -16,6 +16,9 @@ CACHE_TTL = 24 * 3600
 
 
 class ProviderStore:
+    # Never exposed to the web page through pywebview's js_api (it walks nested objects).
+    _serializable = False
+
     def __init__(self, app_dir: Optional[Path] = None) -> None:
         self.app_dir = (app_dir or get_app_support_dir()).resolve()
         self.path = self.app_dir / "providers.json"

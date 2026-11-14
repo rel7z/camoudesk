@@ -49,18 +49,19 @@ class TestPreview(PreviewCase):
 
     def test_mismatched_used_or_expired_tokens_are_ignored(self) -> None:
         pv = self.preview("linux")
+        previewed_fp = self.api.ctx.profiles_service.previews[pv["token"]][1]
         other_os = self.api.profiles_create({"name": "W", "os": "windows", "fp_preview": pv["token"]})["data"]
         self.assertNotEqual(other_os["fingerprint_summary"]["user_agent"], pv["summary"]["user_agent"])
         self.assertIn("Windows", other_os["fingerprint_summary"]["user_agent"])
         # The token was consumed by the failed match; it cannot be reused.
         again = self.api.profiles_create({"name": "L", "os": "linux", "fp_preview": pv["token"]})["data"]
-        self.assertNotEqual(again["fingerprint_summary"], pv["summary"])
+        self.assertNotEqual(self.saved_fp(again["id"]), previewed_fp)  # whole fingerprint: summaries can coincide
 
         pv2 = self.preview("linux")
-        os_key, fp, _created = self.api._fp_previews[pv2["token"]]
-        self.api._fp_previews[pv2["token"]] = (os_key, fp, time.time() - 31 * 60)
+        os_key, fp, _created = self.api.ctx.profiles_service.previews[pv2["token"]]
+        self.api.ctx.profiles_service.previews[pv2["token"]] = (os_key, fp, time.time() - 31 * 60)
         stale = self.api.profiles_create({"name": "S", "os": "linux", "fp_preview": pv2["token"]})["data"]
-        self.assertNotEqual(stale["fingerprint_summary"], pv2["summary"])
+        self.assertNotEqual(self.saved_fp(stale["id"]), fp)
 
     def test_screen_pin_must_match_the_preview(self) -> None:
         pv = self.preview("windows", "1920x1080")
@@ -74,9 +75,9 @@ class TestPreview(PreviewCase):
         self.assertEqual(other["fingerprint_summary"]["screen"], "1366x768")
 
     def test_token_store_is_capped(self) -> None:
-        for _ in range(self.api._PREVIEW_MAX + 5):
+        for _ in range(self.api.ctx.profiles_service.PREVIEW_MAX + 5):
             self.preview("macos")
-        self.assertLessEqual(len(self.api._fp_previews), self.api._PREVIEW_MAX)
+        self.assertLessEqual(len(self.api.ctx.profiles_service.previews), self.api.ctx.profiles_service.PREVIEW_MAX)
         self.assertFalse(self.api.fingerprint_preview("macos", "banana")["ok"])
 
     def test_save_rechecks_os_coherence(self) -> None:

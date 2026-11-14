@@ -79,12 +79,12 @@ class TestBridge(unittest.TestCase):
         self.assertFalse(self.api.proxy_parse("not a proxy")["ok"])
 
         fake = {"ok": True, "ip": "203.0.113.9", "country_code": "BR", "timezone": "America/Sao_Paulo"}
-        with patch("camoudesk.ui.api.check_proxy_config", return_value=dict(fake)):
+        with patch("camoudesk.services.proxies.check_proxy_config", return_value=dict(fake)):
             res = self.api.proxy_test({"proxy_parts": {"type": "http", "host": "203.0.113.9", "port": 8000}})["data"]
         self.assertEqual(res["locale"], "pt-BR")  # preview of what "auto" locale will use
 
         px = self.proxies.create({"type": "http", "host": "10.0.0.7", "port": 80})
-        with patch("camoudesk.ui.api.check_proxy_config", return_value=dict(fake)):
+        with patch("camoudesk.services.proxies.check_proxy_config", return_value=dict(fake)):
             self.api.proxy_test({"proxy_id": px.id})
         self.assertEqual(self.proxies.get(px.id).last_check.country_code, "BR")  # recorded on the saved proxy
 
@@ -118,7 +118,7 @@ class TestBridge(unittest.TestCase):
         calls = []
         self.api.set_proxy_notifier(lambda: (calls.append(1), notified.set()))
         fake = {"ok": True, "ip": "203.0.113.4", "country_code": "CA", "timezone": "America/Toronto", "latency_ms": 50}
-        with patch("camoudesk.ui.api.check_proxy_config", return_value=dict(fake)):
+        with patch("camoudesk.services.proxies.check_proxy_config", return_value=dict(fake)):
             started = self.api.proxies_check_all()["data"]
             self.assertEqual(started["started"], 3)
             deadline = __import__("time").monotonic() + 5
@@ -142,8 +142,8 @@ class TestBridge(unittest.TestCase):
         self.assertFalse(self.api.proxies_rotate(no_url["id"])["ok"])
         resp = type("R", (), {"status_code": 200})()
         fake = {"ok": True, "ip": "203.0.113.200", "country_code": "US", "timezone": "UTC"}
-        with patch("requests.get", return_value=resp) as get, patch("camoudesk.ui.api.check_proxy_config", return_value=dict(fake)), \
-                patch("camoudesk.ui.api.time.sleep"):
+        with patch("requests.get", return_value=resp) as get, patch("camoudesk.services.proxies.check_proxy_config", return_value=dict(fake)), \
+                patch("camoudesk.services.proxies.time.sleep"):
             row = self.api.proxies_rotate(px["id"])["data"]
         self.assertEqual(get.call_args.args[0], "https://rotate.example/x")
         self.assertNotIn("proxies", get.call_args.kwargs)  # not routed through the proxy itself

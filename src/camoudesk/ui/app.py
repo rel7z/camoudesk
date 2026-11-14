@@ -7,7 +7,7 @@ import threading
 import webview
 
 from camoudesk.core.storage import ProfileStore
-from camoudesk.manager.process_manager import ProcessManager
+from camoudesk.services.context import AppContext
 from camoudesk.ui.api import DesktopBridgeApi
 from camoudesk.ui import window_chrome
 from camoudesk.ui.single_instance import InstanceLock, activate_existing
@@ -23,8 +23,9 @@ def main() -> None:
         activate_existing(instance.holder_pid())
         print("CamouDesk is already running; brought the existing window to the front.", file=sys.stderr)
         return
-    manager = ProcessManager(store=store)
-    api = DesktopBridgeApi(store=store, manager=manager)
+    ctx = AppContext.create(store=store)  # stores, process manager, event bus, services
+    manager = ctx.manager
+    api = DesktopBridgeApi(ctx=ctx)
 
     index_file = FRONTEND_DIR / "index.html"
     window = webview.create_window(
@@ -40,14 +41,14 @@ def main() -> None:
         text_select=True,
     )
 
-    def _push_status() -> None:
+    def _push_status(**_: object) -> None:
         # Called from background threads whenever a browser starts, stops, exits or warns.
         try:
             window.evaluate_js("window.camoudesk && window.camoudesk.onStatusChange && window.camoudesk.onStatusChange()")
         except Exception:
             pass
 
-    def _push_proxies() -> None:
+    def _push_proxies(**_: object) -> None:
         try:
             window.evaluate_js("window.camoudesk && window.camoudesk.onProxiesChange && window.camoudesk.onProxiesChange()")
         except Exception:
@@ -61,18 +62,16 @@ def main() -> None:
     window.events.shown += _apply_chrome
 
     api.set_window(window)
-    api.set_theme_listener(lambda theme: window_chrome.apply(window, theme))
-    manager.add_listener(_push_status)
-    api.set_proxy_notifier(_push_proxies)
+    ctx.events.subscribe("theme", lambda theme: window_chrome.apply(window, theme))
+    ctx.events.subscribe("status", _push_status)
+    ctx.events.subscribe("proxies", _push_proxies)
     manager.start_monitor()
     api.sync_api_server()  # local REST API, if enabled in Settings
 
     def _warm_host_gpu() -> None:
         # Learn this Mac's GPU once (headless, ~10 s, stored per Camoufox build) so profiles that
         # claim this Mac's OS can show their real canvas. See core/host_gpu.py.
-        from camoudesk.core import host_gpu
-
-        host_gpu.ensure(store.app_dir)
+        ctx.engine.prepare_host(store.app_dir)
 
     threading.Thread(target=_warm_host_gpu, name="camoudesk-host-gpu", daemon=True).start()
 

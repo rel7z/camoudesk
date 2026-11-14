@@ -134,7 +134,7 @@ class TestBridgeGuards(ArchiveCase):
         manager.launch(prof.id)
         try:
             with self.assertRaises(ValueError):
-                api._export_one(prof.id, self.root / "x.camoudesk", False)
+                api.ctx.archive_service.export_one(prof.id, self.root / "x.camoudesk", False)
         finally:
             manager.stop_all(timeout=1.0)
         out = self.root / "ok.camoudesk"

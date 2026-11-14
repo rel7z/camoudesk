@@ -131,15 +131,22 @@ class _Run:
 class ProcessManager:
     """Tracks running browser processes per profile ID."""
 
+    # Never exposed to the web page through pywebview's js_api (it walks nested objects).
+    _serializable = False
+
     def __init__(
         self,
         store: ProfileStore,
         python_executable: Optional[str] = None,
         adopt_running: bool = True,
         proxies: Optional[ProxyStore] = None,
+        engine: Any = None,
     ) -> None:
+        from camoudesk.engines import get_engine
+
         self.store = store
         self.proxies = proxies or ProxyStore(store.app_dir)
+        self.engine = engine or get_engine()  # the browser engine (engines/), for launch specs and host probes
         self.stop_timeout = 10.0  # grace period for a browser to quit before signals escalate
         self.python_executable = python_executable or sys.executable
         self._lock = threading.Lock()
@@ -373,9 +380,9 @@ class ProcessManager:
             for url in override_urls(url_override):
                 cmd.extend(["--url", url])
             return cmd, _build_worker_env(), ""
-        spec = build_launch_spec(
-            profile, self.store, headless=headless, url_override=url_override, local_proxy=local_proxy,
-            network=network or resolve_network(profile, self.proxies),
+        spec = self.engine.launch_spec(
+            profile, self.store, network or resolve_network(profile, self.proxies),
+            headless=headless, url_override=url_override, local_proxy=local_proxy,
         )
         header = (
             f"[INFO] Launching Camoufox directly profile={profile.id} os={profile.os} "
@@ -603,9 +610,7 @@ class ProcessManager:
         if chosen == MODE_DIRECT:
             # The direct launch spec is computed here, in the GUI process: learn this Mac's GPU first
             # (once per Camoufox build) so a profile claiming this Mac can show its real canvas.
-            from camoudesk.core import host_gpu
-
-            host_gpu.ensure(self.store.app_dir)
+            self.engine.prepare_host(self.store.app_dir)
         if network.rotating:
             self._proxy_logger(profile.id)(
                 "Rotating proxy session: the exit IP changes on every request, so sites may see this "

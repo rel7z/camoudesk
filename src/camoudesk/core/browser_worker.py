@@ -8,7 +8,8 @@ from typing import Any, Optional
 
 from camoufox.sync_api import Camoufox
 
-from camoudesk.core.launcher import build_camoufox_kwargs, override_urls, profile_camoufox_kwargs, resolve_network
+from camoudesk.core.launcher import build_camoufox_kwargs, override_urls, profile_camoufox_kwargs, resolve_network  # noqa: F401
+from camoudesk.engines import get_engine
 from camoudesk.core.proxy_store import ProxyStore
 from camoudesk.core.storage import ProfileStore
 
@@ -28,9 +29,8 @@ def run_worker(
         print(f"[ERROR] Profile '{profile_id}' not found.", file=sys.stderr, flush=True)
         return 2
 
-    from camoudesk.core import host_gpu
-
-    host_gpu.ensure(store.app_dir)  # before Camoufox(): its own probe would run inside the launch
+    engine = get_engine()
+    engine.prepare_host(store.app_dir)  # before Camoufox(): its own probe would run inside the launch
     network = resolve_network(profile, ProxyStore(store.app_dir))
     if network.missing_saved_proxy:
         print("[ERROR] This profile's saved proxy was deleted; choose another proxy or Direct.", file=sys.stderr, flush=True)
@@ -48,7 +48,7 @@ def run_worker(
     signal.signal(signal.SIGINT, _handle_signal)
 
     target_urls = override_urls(url_override) or list(profile.start_urls)
-    kwargs, _geoip = profile_camoufox_kwargs(profile, store, network, headless)
+    kwargs, _geoip = engine.context_kwargs(profile, store, network, headless)
 
     print(
         f"[INFO] Launching Camoufox profile={profile.id} os={profile.os} headless={headless}",
@@ -112,11 +112,10 @@ def run_cookie_import(profile_id: str, cookie_file: str) -> int:
     except (OSError, ValueError) as exc:
         print(f"[ERROR] Could not read cookies: {exc}", file=sys.stderr, flush=True)
         return 2
-    from camoudesk.core import host_gpu
-
-    host_gpu.ensure(store.app_dir)  # before Camoufox(): its own probe would run inside the launch
+    engine = get_engine()
+    engine.prepare_host(store.app_dir)  # before Camoufox(): its own probe would run inside the launch
     network = resolve_network(profile, ProxyStore(store.app_dir))
-    kwargs, _ = profile_camoufox_kwargs(profile, store, network, headless=True)
+    kwargs, _ = engine.context_kwargs(profile, store, network, headless=True)
     try:
         with Camoufox(**kwargs) as context:
             before = len(context.cookies())
@@ -160,9 +159,8 @@ def run_identity_check(profile_id: str, timeout_s: float = 60.0) -> int:
     if profile is None:
         print(f"[ERROR] Profile '{profile_id}' not found.", file=sys.stderr, flush=True)
         return 2
-    from camoudesk.core import host_gpu
-
-    host_gpu.ensure(store.app_dir)  # before Camoufox(): its own probe would run inside the launch
+    engine = get_engine()
+    engine.prepare_host(store.app_dir)  # before Camoufox(): its own probe would run inside the launch
     proxies = ProxyStore(store.app_dir)
     network = resolve_network(profile, proxies)
     if network.missing_saved_proxy:
@@ -170,7 +168,7 @@ def run_identity_check(profile_id: str, timeout_s: float = 60.0) -> int:
         return 2
     network = ensure_location(profile, network, store, proxies, lambda m: print(f"[WARN] {m}", file=sys.stderr, flush=True))
     profile = store.get_profile(profile.id) or profile
-    kwargs, _ = profile_camoufox_kwargs(profile, store, network, headless=True)
+    kwargs, _ = engine.context_kwargs(profile, store, network, headless=True)
     html = (Path(__file__).resolve().parent / "identity_probe.html").read_text(encoding="utf-8")
     try:
         with Camoufox(**kwargs) as context:

@@ -239,7 +239,7 @@ class TestBridge(StoreCase):
             seen.append(password_of(cfg))
             return {"ok": True, "ip": "198.51.100.9", "timezone": "Europe/Berlin", "country_code": "DE"}
 
-        with patch("camoudesk.ui.api.check_proxy_config", side_effect=fake_check):
+        with patch("camoudesk.services.proxies.check_proxy_config", side_effect=fake_check):
             res = self.api.proxy_test({"proxy_id": self.px.id, "profile_id": a.id})["data"]
             self.assertEqual(res["session"], self.px.session_for(a))
             self.assertTrue(seen[-1].endswith(f"session-{self.px.session_for(a)}_lifetime-60"))

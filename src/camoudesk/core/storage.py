@@ -54,6 +54,9 @@ _Entry = Union[Profile, Dict[str, Any]]
 class ProfileStore:
     """Process- and thread-safe profile registry backed by atomic JSON writes and isolated folders."""
 
+    # Never exposed to the web page through pywebview's js_api (it walks nested objects).
+    _serializable = False
+
     def __init__(
         self,
         app_dir: Optional[Path] = None,

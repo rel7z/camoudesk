@@ -112,7 +112,7 @@ class TestBridge(unittest.TestCase):
     def test_check_saves_a_report_and_rows_show_its_summary(self) -> None:
         prof = self.store.create_profile({"name": "W", "os": "windows"})
         with patch.object(self.api.manager, "check_identity", return_value=raw_result(ip={"ip": "203.0.113.4"})), \
-                patch.object(self.api, "_real_ip", return_value="92.119.177.22"):
+                patch.object(self.api.ctx.identity_service, "real_ip", return_value="92.119.177.22"):
             rep = self.api.profiles_check_identity(prof.id)["data"]
         self.assertIn(rep["status"], ("pass", "warn", "fail"))
         saved = json.loads((self.store.profile_dir(prof.id) / identity_check.REPORT_FILENAME).read_text())
